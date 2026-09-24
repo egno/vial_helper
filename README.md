@@ -3,6 +3,8 @@
 Menu-bar app for macOS that shows the keymap of your Vial-configured split keyboard
 (by default a splitkb Aurora Corne) as a floating overlay.
 
+![Vial Helper overlay showing all layers of an Aurora Corne keymap](docs/screenshot.png)
+
 - Lives in the menu bar (no Dock icon). Left-click the keyboard icon to toggle the overlay,
   right-click for the menu (Show, Reload Keymap, Open .vil File…, Reveal in Finder, Settings, Quit).
 - Global shortcut toggles the overlay from anywhere (default `⌃⌥⌘K`, change it in Settings).
