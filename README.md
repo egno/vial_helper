@@ -41,3 +41,7 @@ swift run VialHelper --settings                 # launch with the Settings windo
 The project builds with the Command Line Tools alone. On the macOS 27 SDK SwiftUI's `@State`
 is a compiler macro whose plugin ships only with Xcode, so views keep transient state in
 `ObservableObject`s (`@ObservedObject`) instead of `@State`.
+
+## License
+
+[MIT](LICENSE)
