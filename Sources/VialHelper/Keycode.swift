@@ -19,6 +19,8 @@ struct LabelContext {
     var tapDances: [TapDance] = []
     /// User-defined layer names, indexed by layer number ("" = unnamed).
     var layerNames: [String] = []
+    /// Active-keyboard-layout override for basic keycodes ("KC_A" -> "Ф", "KC_GRV" -> "Щ", etc.).
+    var keyOverrides: [String: String] = [:]
 
     func layerName(_ n: Int) -> String {
         if n < layerNames.count, !layerNames[n].isEmpty { return layerNames[n] }
@@ -168,6 +170,7 @@ enum Keycode {
             return KeyLabel(primary: "M\(n)", secondary: "macro", style: .special)
         }
         if let l = specials[a] { return l }
+        if let override = context.keyOverrides[a] { return KeyLabel(primary: override) }
         if let t = basic[a] { return KeyLabel(primary: t) }
         if let m = modKeys[a] { return KeyLabel(primary: m, style: .modifier) }
 
@@ -260,7 +263,9 @@ enum Keycode {
         "SH_TT": KeyLabel(primary: "Swap", style: .special),
     ]
 
-    private static let basic: [String: String] = {
+    /// QMK basic keycode -> the character it prints under the reference US ANSI layout.
+    /// Not private: `KeyboardLayoutObserver` reverse-looks-up physical key positions from this.
+    static let basic: [String: String] = {
         var t: [String: String] = [:]
         for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" { t["KC_\(c)"] = String(c) }
         for d in "1234567890" { t["KC_\(d)"] = String(d) }

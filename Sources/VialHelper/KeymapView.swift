@@ -5,6 +5,7 @@ import SwiftUI
 struct KeymapRootView: View {
     @ObservedObject var model: KeymapModel
     @ObservedObject var settings: AppSettings
+    @ObservedObject private var layoutObserver = KeyboardLayoutObserver.shared
     /// Opaque background for off-screen rendering (materials do not render there).
     var plainBackground = false
 
@@ -12,7 +13,7 @@ struct KeymapRootView: View {
     private let largeUnit: CGFloat = 56
 
     private var labelContext: LabelContext {
-        LabelContext(tapDances: model.file?.tapDances ?? [], layerNames: settings.layerNameList)
+        LabelContext(tapDances: model.file?.tapDances ?? [], layerNames: settings.layerNameList, keyOverrides: layoutObserver.overrides)
     }
 
     var body: some View {
