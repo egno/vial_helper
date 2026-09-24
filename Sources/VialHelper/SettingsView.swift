@@ -19,8 +19,11 @@ struct SettingsView: View {
         Form {
             Section("Keymap file") {
                 HStack {
-                    TextField("~/aurora.vil", text: $settings.vilPath)
+                    TextField("", text: $settings.vilPath, prompt: Text("~/aurora.vil"))
+                        .labelsHidden()
+                        .multilineTextAlignment(.leading)
                         .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: .infinity)
                     Button("Browse…", action: browse)
                 }
                 HStack(spacing: 8) {
@@ -54,8 +57,11 @@ struct SettingsView: View {
             }
 
             Section("Layer names") {
-                TextField("Base, Nav, Num, Sym…", text: $settings.layerNames)
+                TextField("", text: $settings.layerNames, prompt: Text("Base, Nav, Num, Sym…"))
+                    .labelsHidden()
+                    .multilineTextAlignment(.leading)
                     .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: .infinity)
                 Text("Comma-separated, in layer order. Optional.").font(.caption).foregroundStyle(.secondary)
             }
 

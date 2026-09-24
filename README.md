@@ -31,6 +31,7 @@ swift run VialHelper --show                     # launch with the overlay alread
 swift run VialHelper --render out.png           # render the overlay to a PNG and exit
 swift run VialHelper --render out.png --layer 1 # render a single layer
 swift run VialHelper --selftest                 # open overlay, exercise key handling, exit 0/1
+swift run VialHelper --settings                 # launch with the Settings window open
 ```
 
 ## Toolchain note

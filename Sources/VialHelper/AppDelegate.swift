@@ -38,6 +38,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--show") {
             overlay.show()
         }
+        if CommandLine.arguments.contains("--settings") {
+            openSettings()
+        }
         if CommandLine.arguments.contains("--selftest") {
             runSelfTest()
         }
@@ -153,7 +156,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 defer: false
             )
             window.title = "Vial Helper Settings"
-            window.contentView = NSHostingView(rootView: view)
+            let hosting = NSHostingView(rootView: view)
+            window.contentView = hosting
+            window.setContentSize(hosting.fittingSize)
             window.isReleasedWhenClosed = false
             window.center()
             settingsWindow = window
