@@ -13,7 +13,8 @@ struct KeymapRootView: View {
     private let largeUnit: CGFloat = 56
 
     private var labelContext: LabelContext {
-        LabelContext(tapDances: model.file?.tapDances ?? [], layerNames: settings.layerNameList, keyOverrides: layoutObserver.overrides)
+        LabelContext(tapDances: model.file?.tapDances ?? [], layerNames: settings.layerNameList, keyOverrides: layoutObserver.overrides,
+                     holdAloneLayer: model.holdAloneLayer)
     }
 
     var body: some View {
@@ -22,6 +23,7 @@ struct KeymapRootView: View {
             if let file = model.file, let geometry = model.geometry {
                 content(file: file, geometry: geometry)
                 if !file.combos.isEmpty { combos(file) }
+                if let h = model.holdAloneLayer { holdAloneNotes(file, geometry: geometry, layer: h) }
             } else {
                 errorView
             }
@@ -115,6 +117,27 @@ struct KeymapRootView: View {
         }
     }
 
+    /// Legend for the teal hold-alone legends, plus bindings the firmware will never send.
+    private func holdAloneNotes(_ file: VilFile, geometry: KeyboardGeometry, layer h: Int) -> some View {
+        let problems: [String] = geometry.keys.compactMap { k in
+            guard let why = file.holdAloneProblem(layer: h, row: k.row, col: k.col) else { return nil }
+            let action = Keycode.short(file.keycode(layer: h, row: k.row, col: k.col), context: labelContext)
+            let base = Keycode.short(file.keycode(layer: 0, row: k.row, col: k.col), context: labelContext)
+            return "\(action) on \(base): \(why)"
+        }
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Text("◔").foregroundStyle(KeyCapView.aloneColor)
+                Text("hold alone: held past the tapping term and released without another key (under 1 s), from L\(h)")
+            }
+            ForEach(problems, id: \.self) { p in
+                Label(p, systemImage: "exclamationmark.triangle").foregroundStyle(KeyCapView.infoColor)
+            }
+        }
+        .font(.system(size: 10.5))
+        .foregroundStyle(.secondary)
+    }
+
     private var errorView: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("Could not load keymap", systemImage: "exclamationmark.triangle")
@@ -171,6 +194,10 @@ struct LayerCard: View {
                     Text(name).font(.system(size: max(11, unit * 0.3), weight: .semibold, design: .rounded))
                         .foregroundStyle(KeyCapView.layerColor)
                 }
+                if layer == context.holdAloneLayer {
+                    Text("hold-alone config").font(.system(size: max(10, unit * 0.24), weight: .semibold, design: .rounded))
+                        .foregroundStyle(KeyCapView.aloneColor)
+                }
             }
             KeyboardCanvas(file: file, geometry: geometry, layer: layer, unit: unit, encoderMode: encoderMode, context: context)
         }
@@ -192,7 +219,7 @@ struct KeyboardCanvas: View {
             ForEach(geometry.keys) { k in
                 let code = (k.row < keys.count && k.col < keys[k.row].count) ? keys[k.row][k.col] : "-1"
                 if code != "-1" {
-                    KeyCapView(label: Keycode.label(code, context: context), unit: unit)
+                    KeyCapView(label: label(code, row: k.row, col: k.col), unit: unit)
                         .frame(width: k.width * unit - gap, height: k.height * unit - gap)
                         .rotationEffect(.degrees(k.rotation))
                         .position(x: k.center.x * unit, y: k.center.y * unit)
@@ -210,6 +237,21 @@ struct KeyboardCanvas: View {
             }
         }
         .frame(width: geometry.size.width * unit, height: geometry.size.height * unit)
+    }
+
+    private func label(_ code: String, row: Int, col: Int) -> KeyLabel {
+        var l = Keycode.label(code, context: context)
+        guard let h = context.holdAloneLayer else { return l }
+        if layer == h {
+            if let why = file.holdAloneProblem(layer: h, row: row, col: col) {
+                l.secondary = "! " + why
+                l.secondaryKind = .info
+            }
+        } else if Keycode.isTapHold(code) {
+            let action = file.keycode(layer: h, row: row, col: col)
+            if Keycode.isHoldAloneSendable(action) { l.alone = Keycode.short(action, context: context) }
+        }
+        return l
     }
 }
 
@@ -239,6 +281,7 @@ struct KeyCapView: View {
     static let layerColor = Color.blue
     static let modColor = Color.purple
     static let infoColor = Color.orange
+    static let aloneColor = Color.teal
 
     let label: KeyLabel
     let unit: CGFloat
@@ -268,7 +311,17 @@ struct KeyCapView: View {
                     }
                 }
                 .padding(.horizontal, unit * 0.06)
-                .padding(.top, label.secondary == nil ? 0 : unit * 0.1)
+                .padding(.top, label.alone != nil ? unit * 0.2 : label.secondary == nil ? 0 : unit * 0.1)
+            }
+            if let alone = label.alone {
+                Text(unit >= 40 ? "◔ " + alone : alone)
+                    .font(.system(size: max(7, unit * 0.2), weight: .bold, design: .rounded))
+                    .foregroundStyle(KeyCapView.aloneColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                    .padding(.top, unit * 0.05)
+                    .padding(.horizontal, unit * 0.08)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
         }
     }

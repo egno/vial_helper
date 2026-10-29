@@ -15,6 +15,9 @@ Menu-bar app for macOS that shows the keymap of your Vial-configured split keybo
 - Shows mod-taps (hold modifier under the tap key), layer-taps, combos and encoder bindings.
   Layer names from Settings replace "L1"-style legends on layer keys and in the layer chips.
   Settings → Encoders picks which half's encoder to draw (Vial exports a slot per half even if unused).
+- Hold-alone actions (firmware with `hold_alone.c`): set Settings → Hold-alone actions → Config layer
+  (e.g. "Last layer"). That layer is hidden and its keys show in teal (`◔`) at the top right of the
+  layer-tap / mod-tap keys they belong to; bindings the firmware can never send are flagged below the keymap.
 
 ## Build
 

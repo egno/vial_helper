@@ -97,6 +97,7 @@ final class AppSettings: ObservableObject {
         static let hotKey = "hotKey"
         static let layerNames = "layerNames"
         static let encoderMode = "encoderMode"
+        static let holdAloneLayer = "holdAloneLayer"
     }
 
     static let defaultPath = "~/aurora.vil"
@@ -126,7 +127,17 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(encoderMode.rawValue, forKey: Key.encoderMode) }
     }
 
+    /// Layer the firmware reads hold-alone actions from (see vial_full/hold_alone.c).
+    /// `holdAloneOff`, `holdAloneLast` or a layer number.
+    @Published var holdAloneLayer: Int {
+        didSet { defaults.set(holdAloneLayer, forKey: Key.holdAloneLayer) }
+    }
+
+    static let holdAloneOff = -1
+    static let holdAloneLast = -2
+
     private init() {
+        holdAloneLayer = defaults.object(forKey: Key.holdAloneLayer) == nil ? AppSettings.holdAloneOff : defaults.integer(forKey: Key.holdAloneLayer)
         encoderMode = EncoderMode(rawValue: defaults.string(forKey: Key.encoderMode) ?? "") ?? .both
         vilPath = defaults.string(forKey: Key.vilPath) ?? AppSettings.defaultPath
         layerNames = defaults.string(forKey: Key.layerNames) ?? ""

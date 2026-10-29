@@ -51,6 +51,20 @@ struct VilFile {
     /// Indices of layers that have at least one real binding.
     var nonEmptyLayers: [Int] { layers.indices.filter { !isLayerEmpty($0) } }
 
+    func keycode(layer: Int, row: Int, col: Int) -> String {
+        guard layer < layers.count, row < layers[layer].count, col < layers[layer][row].count else { return "-1" }
+        return layers[layer][row][col]
+    }
+
+    /// Why a hold-alone binding at this position can never fire, or nil if it can (or there is none).
+    func holdAloneProblem(layer: Int, row: Int, col: Int) -> String? {
+        let code = keycode(layer: layer, row: row, col: col)
+        if code == "-1" || Keycode.isEmpty(code) || Keycode.isTransparent(code) { return nil }
+        if !Keycode.isHoldAloneSendable(code) { return "not sendable" }
+        let armed = layers.indices.contains { $0 != layer && Keycode.isTapHold(keycode(layer: $0, row: row, col: col)) }
+        return armed ? nil : "no tap-hold key"
+    }
+
     static func load(path: String) throws -> VilFile {
         guard FileManager.default.fileExists(atPath: path) else { throw VilError.notFound(path) }
         let data = try Data(contentsOf: URL(fileURLWithPath: path))

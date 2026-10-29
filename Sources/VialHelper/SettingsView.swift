@@ -65,6 +65,16 @@ struct SettingsView: View {
                 Text("Comma-separated, in layer order. Optional.").font(.caption).foregroundStyle(.secondary)
             }
 
+            Section("Hold-alone actions") {
+                Picker("Config layer", selection: $settings.holdAloneLayer) {
+                    Text("Off").tag(AppSettings.holdAloneOff)
+                    Text("Last layer").tag(AppSettings.holdAloneLast)
+                    ForEach(0..<max(model.layerCount, 1), id: \.self) { Text("L\($0)").tag($0) }
+                }
+                Text("Firmware with hold_alone.c taps the key at the same position on this layer when a layer-tap or mod-tap is held and released alone. The layer is hidden and its keys appear in teal on the tap-hold keys.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("General") {
                 Picker("Encoders", selection: $settings.encoderMode) {
                     ForEach(EncoderMode.allCases) { Text($0.title).tag($0) }

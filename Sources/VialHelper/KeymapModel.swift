@@ -6,14 +6,23 @@ final class KeymapModel: ObservableObject {
     @Published private(set) var error: String?
     /// nil = show every layer.
     @Published var selectedLayer: Int?
+    /// Mirrors `AppSettings.holdAloneLayer`.
+    @Published var holdAloneSetting = AppSettings.holdAloneOff
 
     private(set) var geometry: KeyboardGeometry?
     private var loadedPath: String?
     private var loadedModified: Date?
 
     var layerCount: Int { file?.layers.count ?? 0 }
-    /// Layers shown in the UI (empty ones are hidden).
-    var visibleLayers: [Int] { file?.nonEmptyLayers ?? [] }
+    /// Layers shown in the UI (empty ones and the hold-alone config layer are hidden).
+    var visibleLayers: [Int] { (file?.nonEmptyLayers ?? []).filter { $0 != holdAloneLayer } }
+
+    /// Resolved hold-alone config layer, nil when off or out of range.
+    var holdAloneLayer: Int? {
+        guard let file else { return nil }
+        let n = holdAloneSetting == AppSettings.holdAloneLast ? file.layers.count - 1 : holdAloneSetting
+        return n >= 0 && n < file.layers.count ? n : nil
+    }
 
     /// Re-reads the file when the path or its modification date changed.
     func reloadIfNeeded(path: String, force: Bool = false) {
@@ -27,7 +36,7 @@ final class KeymapModel: ObservableObject {
             geometry = KeyboardGeometry.make(for: f)
             file = f
             error = nil
-            if let s = selectedLayer, !f.nonEmptyLayers.contains(s) { selectedLayer = nil }
+            if let s = selectedLayer, !f.nonEmptyLayers.contains(s), s != holdAloneLayer { selectedLayer = nil }
         } catch {
             file = nil
             geometry = nil
@@ -37,7 +46,8 @@ final class KeymapModel: ObservableObject {
 
     func select(_ index: Int?) {
         guard let index else { selectedLayer = nil; return }
-        guard visibleLayers.contains(index) else { return }
+        // The hold-alone layer is hidden from the chips but can still be opened by its digit.
+        guard visibleLayers.contains(index) || index == holdAloneLayer else { return }
         selectedLayer = index
     }
 

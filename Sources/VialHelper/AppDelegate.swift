@@ -12,6 +12,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        settings.$holdAloneLayer
+            .sink { [weak self] in self?.model.holdAloneSetting = $0 }
+            .store(in: &cancellables)
+
         if handleCommandLine() { return }
 
         model.reloadIfNeeded(path: settings.expandedPath)

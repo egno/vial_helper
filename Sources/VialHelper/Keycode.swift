@@ -9,6 +9,8 @@ struct KeyLabel: Equatable {
     var secondary: String? = nil
     var secondaryKind: SecondaryKind = .info
     var style: Style = .normal
+    /// Hold-alone action (held past the tapping term and released without other keys).
+    var alone: String? = nil
 
     static let none = KeyLabel(primary: "", style: .none)
     static let transparent = KeyLabel(primary: "▽", style: .transparent)
@@ -21,6 +23,8 @@ struct LabelContext {
     var layerNames: [String] = []
     /// Active-keyboard-layout override for basic keycodes ("KC_A" -> "Ф", "KC_GRV" -> "Щ", etc.).
     var keyOverrides: [String: String] = [:]
+    /// Layer holding hold-alone actions, nil when the feature is off.
+    var holdAloneLayer: Int? = nil
 
     func layerName(_ n: Int) -> String {
         if n < layerNames.count, !layerNames[n].isEmpty { return layerNames[n] }
@@ -51,6 +55,34 @@ enum Keycode {
         default:
             if let s = l.secondary, l.secondaryKind != .info { return "\(l.primary)/\(s)" }
             return l.primary
+        }
+    }
+
+    // MARK: - Hold-alone (vial_full/hold_alone.c)
+
+    /// Layer-tap or mod-tap: the keys the firmware arms hold-alone for.
+    static func isTapHold(_ code: String) -> Bool {
+        guard case .call(let name, _) = parse(code) else { return false }
+        if name == "LT" || name == "MT" { return true }
+        if name.hasPrefix("LT"), Int(name.dropFirst(2)) != nil { return true }
+        return name.hasSuffix("_T") && modSymbols(String(name.dropLast(2))) != nil
+    }
+
+    /// Whether `hold_alone_send` can send it: a basic key, a modified basic key, or a macro.
+    static func isHoldAloneSendable(_ code: String) -> Bool {
+        isBasicOrModified(parse(code))
+    }
+
+    private static func isBasicOrModified(_ expr: Expr) -> Bool {
+        switch expr {
+        case .atom(let a):
+            if a.hasPrefix("M"), Int(a.dropFirst()) != nil { return true }
+            // Raw numbers from the .vil: KC_NO (0) and KC_TRNS (1) < sendable <= QK_MODS_MAX.
+            if a.hasPrefix("KC_"), let n = Int(a.dropFirst(3)) { return n > 1 && n <= 0x1FFF }
+            return a.hasPrefix("KC_") && !isEmpty(a) && !isTransparent(a)
+        case .call(let name, let args):
+            guard !name.hasSuffix("_T"), modSymbols(name) != nil, args.count == 1, case .atom(let a) = args[0] else { return false }
+            return a.hasPrefix("KC_")
         }
     }
 
