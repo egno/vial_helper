@@ -14,7 +14,7 @@ enum LiveResult<T> {
     }
 }
 
-/// Typed read-only commands 0xF3-0xF6 (parsers: LiveProtocol.swift). Replies echo bytes 0 and 1,
+/// Typed read-only commands 0xF3-0xF7 (parsers: LiveProtocol.swift). Replies echo bytes 0 and 1,
 /// so every request matches on a 2-byte prefix; the index, where there is one, is checked here.
 extension KeyboardLink {
     enum LiveCommand {
@@ -22,6 +22,7 @@ extension KeyboardLink {
         static let state: UInt8 = 0xF4
         static let trainer: UInt8 = 0xF5
         static let tapHold: UInt8 = 0xF6
+        static let events: UInt8 = 0xF7
     }
 
     private func live<T>(_ bytes: [UInt8], timeout: TimeInterval = 0.5, parse: @escaping ([UInt8]) -> T?,
@@ -109,5 +110,25 @@ extension KeyboardLink {
     /// `layer` 0xFF = the keycodes as resolved with the layers active right now.
     func fetchTapHold(layer: UInt8 = 0, completion: @escaping (LiveResult<TapHoldInfo>) -> Void) {
         live([LiveCommand.tapHold, layer], parse: TapHoldInfo.parse, completion: completion)
+    }
+
+    // MARK: 0xF7 events
+
+    /// Subscribes to state and matrix events for `ttl` seconds (0 ends the subscription). The
+    /// events themselves arrive through `transport.onEvent`. `.ok` carries the ttl as applied.
+    func subscribeEvents(ttl: UInt8, completion: @escaping (LiveResult<Int>) -> Void) {
+        live([LiveCommand.events, 0, ttl], parse: { b in
+            LiveEvent.parseSubscribed(b).flatMap { $0 == Int(ttl) ? $0 : nil }
+        }, completion: completion)
+    }
+
+    /// Ends the subscription without waiting for the reply (for app shutdown).
+    func unsubscribeEventsNow() {
+        transport.sendWithoutReply([LiveCommand.events, 0, 0])
+    }
+
+    /// The current state / matrix event as a reply; works without a subscription (debug).
+    func fetchEvent(kind: UInt8, completion: @escaping (LiveResult<LiveEvent>) -> Void) {
+        live([LiveCommand.events, kind], parse: LiveEvent.parse, completion: completion)
     }
 }

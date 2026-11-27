@@ -17,6 +17,10 @@ final class KeyboardLayoutObserver: ObservableObject {
     /// QMK keycode -> the character its physical position types under the active layout.
     @Published private(set) var overrides: [String: String] = [:]
 
+    /// QMK keycode -> the character the same position types with Shift held (ghost mode shows
+    /// it while Shift is down). Not upper-cased: it is what Shift itself produces.
+    private(set) var shiftedOverrides: [String: String] = [:]
+
     /// Two-letter tag of the active input source ("EN", "RU"), "" if unknown.
     @Published private(set) var inputSourceShortName = ""
 
@@ -78,11 +82,13 @@ final class KeyboardLayoutObserver: ObservableObject {
         if shortName != inputSourceShortName { inputSourceShortName = shortName }
         guard !referencePositions.isEmpty,
               let layoutData = Self.currentKeyLayoutData() else {
+            shiftedOverrides = [:]
             overrides = [:]
             return
         }
 
         var result: [String: String] = [:]
+        var shifted: [String: String] = [:]
         Self.withUCKeyboardLayout(layoutData) { layoutPtr in
             for (code, vk) in referencePositions {
                 // Show whatever the position types now — letter, digit or symbol — as long as
@@ -91,8 +97,14 @@ final class KeyboardLayoutObserver: ObservableObject {
                 guard let s = Self.translate(layoutPtr, vk), s.count == 1,
                       let scalar = s.unicodeScalars.first, !CharacterSet.controlCharacters.contains(scalar) else { continue }
                 result[code] = s.uppercased()
+                if let t = Self.translate(layoutPtr, vk, shift: true), t.count == 1,
+                   let scalar = t.unicodeScalars.first, !CharacterSet.controlCharacters.contains(scalar) {
+                    shifted[code] = t
+                }
             }
         }
+        // Before `overrides`, whose change is the one that is published.
+        shiftedOverrides = shifted
         overrides = result
     }
 
@@ -121,12 +133,12 @@ final class KeyboardLayoutObserver: ObservableObject {
         }
     }
 
-    private static func translate(_ layoutPtr: UnsafePointer<UCKeyboardLayout>, _ vk: CGKeyCode) -> String? {
+    private static func translate(_ layoutPtr: UnsafePointer<UCKeyboardLayout>, _ vk: CGKeyCode, shift: Bool = false) -> String? {
         var deadKeyState: UInt32 = 0
         var chars = [UniChar](repeating: 0, count: 4)
         var length = 0
         let status = UCKeyTranslate(
-            layoutPtr, vk, UInt16(kUCKeyActionDown), 0,
+            layoutPtr, vk, UInt16(kUCKeyActionDown), shift ? UInt32(shiftKey >> 8) & 0xFF : 0,
             UInt32(LMGetKbdType()), OptionBits(kUCKeyTranslateNoDeadKeysBit),
             &deadKeyState, chars.count, &length, &chars
         )

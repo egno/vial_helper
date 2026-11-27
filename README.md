@@ -8,6 +8,31 @@ Menu-bar app for macOS that shows the keymap of your Vial-configured split keybo
 - Lives in the menu bar (no Dock icon). Left-click the keyboard icon to toggle the overlay,
   right-click for the menu (Show, Reload Keymap, Open .vil File…, Reveal in Finder, Settings, Quit).
 - Global shortcut toggles the overlay from anywhere (default `⌃⌥⌘K`, change it in Settings).
+- Ghost mode (menu → "Ghost Mode", default shortcut `⌃⌥⌘G`): the see-through keys (no window behind them) of the layer that is active
+  right now stay on the screen you are working on while you get used to the layout. It never takes the
+  keyboard focus and clicks pass through it. It is available only while the keyboard is connected (keyboard
+  link, see below): it disappears with the keyboard and, if it was on, comes back with it. It follows the keyboard's layers as you hold or lock them (firmware
+  with the `0xF4` live state, see below; otherwise it shows the base layer); transparent keys show, dimmed, the
+  key of the active layer below. Settings → Ghost mode sets the shortcut, corner, opacity and size.
+  The ghost keeps out of the way: it fades to almost nothing while the pointer is over it, and away while the full
+  overlay is open. Settings → Ghost mode → Show chooses when it is on screen: always, only on layers above the base
+  layer, fading out a few seconds after you return to the base layer (these two need the `0xF4` live state), or
+  "While typing": it appears with any key press (also a layer key or a held Shift), stays while a layer or a
+  modifier is held and fades out after "Hide after" seconds without a key. That mode asks the system how long ago
+  the last key went down (no permission needed, the key itself is not seen), so keys of any keyboard count.
+  "Move Ghost…" (menu or Settings) lets you drag it anywhere: Done, Return or a click elsewhere keeps the place,
+  Esc cancels; the place is remembered per screen, and picking a Position (or Reset) goes back to the corners.
+  "Hide from screenshots and screen sharing" keeps it out of captures.
+  Above the keys a small badge names the shown layer, with chips for what else the keyboard reports: held and
+  one-shot modifiers, Caps Word, Caps Lock, locked layers, a one-shot layer. While Shift is held or a one-shot Shift
+  is pending, digits and punctuation show their shifted legends (taken from the active input source; Caps Word
+  changes only `-`, as in stock QMK; letters are upper case anyway). "Background opacity" fades only the dark plates:
+  the legends stay opaque, with a dark halo that keeps them readable over light windows. "Simplified labels" (on by
+  default) keeps the tap legend and the hold legend of tap-hold keys, in larger type, and drops hold-alone marks,
+  `✱` and the notes under other keys. "Hide keys inherited from lower layers" turns upper layers into a diff view:
+  only the keys the layer itself defines are drawn. "Highlight pressed keys" (off by default) lights up the keys
+  you are holding, with a short afterglow so quick taps show; with it on, typing also counts as activity for
+  "fading out on the base layer". It needs firmware with the `0xF7` events and has a privacy cost, see below.
 - Reads a Vial export (`.vil`); path is configurable, default `~/aurora.vil`.
   The file is re-read automatically whenever it changes on disk.
 - Settings → Keymap source → "Keyboard when connected" (the default): the keymap, encoders, combos, tap dances,
@@ -41,10 +66,25 @@ Menu-bar app for macOS that shows the keymap of your Vial-configured split keybo
     mistake, bottom right tapped by mistake). The tint is relative between keys, the counters live in
     the keyboard's RAM and "tapped" includes ordinary typos. `m` hides/shows it; the menu has
     "Reset Misfire Counters".
-  - Active layers (`0xF4`, polled while the overlay is open): outlined cards and dotted chips for the
+  - Active layers (`0xF4`, polled ~12 times a second while the overlay or the ghost is on screen, unless the
+    keyboard pushes its state, see `0xF7`): outlined cards and dotted chips for the
     layers that are on, a lock for Layer Lock, and chips for trainer / Caps Word / Caps Lock / one-shot
     mods and layer. With a single layer zoomed, the overlay switches to the highest active layer as it
     changes (Settings → "Follow the active layer", on by default).
+  - Push instead of poll (`0xF7`): while the overlay or the ghost is on, the app subscribes to the keyboard's
+    events (for 5 s at a time, renewed every 1.7 s) and the keyboard reports state changes by itself, so layers
+    and modifiers show without the polling delay and `0xF4` is asked only every 5 s as a safety net. The
+    subscription is ended when nothing needs it and on quit, and expires by itself if the app dies. Firmware
+    without `0xF7`, or a subscription that cannot be kept up, means polling as before.
+    - Privacy: a subscriber is also sent the positions of the keys that are physically down, and every program
+      that has the raw HID interface open can read those reports (with the keymap that is what is being typed,
+      without any input-monitoring permission). The app looks at them only for the ghost's "Highlight pressed
+      keys" (off by default) and ignores them otherwise; the firmware sends them to any subscriber regardless.
+    - Vial GUI: Vial pairs replies with its requests by order only, so a report the keyboard sends unasked can
+      corrupt what Vial reads. While the Vial app is running (bundle id `today.vial`, or any app whose name or
+      bundle id has a word starting with "vial") the app holds no subscription and polls instead; it
+      subscribes again when Vial quits. Vial run from source or in a browser is not noticed: turn the ghost and
+      the overlay off while using those.
   - Chordal Hold exemptions (`0xF6`) fill the `✱` markers, and the tap-hold line shows Chordal Hold and
     the Flow Tap term as the keyboard applies them now.
   - Trainer results (`0xF5`): every finished trainer session is appended to
@@ -70,6 +110,9 @@ swift run VialHelper --show                     # launch with the overlay alread
 swift run VialHelper --render out.png           # render the overlay to a PNG and exit
 swift run VialHelper --render out.png --layer 1 # render a single layer
 swift run VialHelper --render out.png --chordal-exempt 303,304,305  # mark keys (row*100+col) as Chordal Hold exempt
+swift run VialHelper --render out.png --ghost   # render the ghost-mode view (layer from --inject-state, see below)
+                                                # over a light-to-dark backdrop; --ghost-opacity 0.3 sets the plate opacity,
+                                                # -ghostSimplifiedLabels NO / -ghostHideInherited YES override those settings
 swift run VialHelper --selftest                 # open overlay, exercise key handling, exit 0/1
 swift run VialHelper --settings                 # launch with the Settings window open
 swift run VialHelper --hid-version              # print firmware version, build date, commit and exit
@@ -81,12 +124,16 @@ swift run VialHelper --vial-diff [file.vil]     # compare the live read with a .
 swift run VialHelper --render out.png --live    # render from the live read (falls back to the file if it fails)
                                                 # modifiers: --vial-timeout 0.00001 (force a failure), --vial-no-definition
 swift run VialHelper --hid-misfire              # print the keyboard's misfire table (and it as an --inject-misfires argument)
-swift run VialHelper --hid-live                 # ask 0xF4 / 0xF5 / 0xF6 once and print what comes back
-swift run VialHelper --live-probe 5             # run the live polling for 5 s, print the request count per command
-swift run VialHelper --live-selftest            # report parser + trainer history tests only (also part of --selftest)
+swift run VialHelper --hid-live                 # ask 0xF4 / 0xF5 / 0xF6 / 0xF7 (state, pressed keys; no subscription) once and print what comes back
+swift run VialHelper --live-probe 5             # run the live data for 5 s as if the overlay were open: whether the state is
+                                                # pushed (0xF7) or polled, requests per command, events received
+swift run VialHelper --live-selftest            # report parsers, trainer history, 0xF7 event routing and push logic against
+                                                # a simulated keyboard (also part of --selftest)
 swift run VialHelper --render out.png --fake-misfires            # or --inject-misfires "hex;hex;…" (0xF3 replies)
 swift run VialHelper --render out.png --inject-state "f4 00 …"   # a 0xF4 reply: active / locked layers, indicators
 swift run VialHelper --render out.png --inject-taphold "f6 00 …" # a 0xF6 reply: Chordal Hold exemptions, tap-hold line
+swift run VialHelper --render out.png --ghost --inject-matrix "f7 02 00 08 06 01 00 00 00 00 40"  # a 0xF7 matrix event:
+                                                # those keys drawn as pressed (here 0,0 and 7,4), whatever the setting says
 swift run VialHelper --render-trainer out.png --fake-trainer     # Trainer History window (or --trainer-history file.json)
 ```
 

@@ -13,9 +13,41 @@ struct KeyLabel: Equatable {
     var alone: String? = nil
     /// Exempt from the Chordal Hold same-hand rule (only set on tap-hold keys).
     var chordalExempt = false
+    /// Transparent on the shown layer; this is the key of the active layer below (ghost mode).
+    var inherited = false
 
     static let none = KeyLabel(primary: "", style: .none)
     static let transparent = KeyLabel(primary: "▽", style: .transparent)
+
+    /// The reduced set for small key caps (ghost mode): the tap legend, plus the hold legend of
+    /// tap-hold keys. Hold-alone actions, the Chordal Hold mark and the notes under other keys
+    /// ("MO", "OSM", "macro", "TD …") do not survive the size.
+    var simplified: KeyLabel {
+        var l = self
+        l.alone = nil
+        l.chordalExempt = false
+        let isHold = secondaryKind == .mod || (secondaryKind == .layer && style != .layer)
+        if !isHold { l.secondary = nil }
+        return l
+    }
+}
+
+/// Which legends are shown as typed with Shift (ghost mode, from the keyboard's live state).
+enum ShiftLegends: Equatable {
+    case off
+    /// Shift is held, or a one-shot Shift waits for the next key: every key is shifted.
+    case all
+    /// Caps Word: QMK's default `caps_word_press_user` shifts letters and `-` only.
+    case capsWord
+
+    static func current(_ state: LiveState?) -> ShiftLegends {
+        guard let s = state else { return .off }
+        // Caps Word works through a weak Shift that it sets and clears key by key, so while it is
+        // on the weak mods say nothing about the next key.
+        let held = s.mods | s.oneShotMods | s.oneShotLockedMods | (s.capsWord ? 0 : s.weakMods)
+        if held & 0x22 != 0 { return .all }
+        return s.capsWord ? .capsWord : .off
+    }
 }
 
 /// Extra information needed to render some keycodes.
@@ -25,6 +57,10 @@ struct LabelContext {
     var layerNames: [String] = []
     /// Active-keyboard-layout override for basic keycodes ("KC_A" -> "Ф", "KC_GRV" -> "Щ", etc.).
     var keyOverrides: [String: String] = [:]
+    /// The same positions typed with Shift under the active layout ("KC_1" -> "!").
+    var shiftedKeyOverrides: [String: String] = [:]
+    /// Not `.off`: basic keys show their shifted legend where it is known (see `Keycode.shiftedLegend`).
+    var shift: ShiftLegends = .off
     /// Layer holding hold-alone actions, nil when the feature is off.
     var holdAloneLayer: Int? = nil
     /// Names of the firmware's custom keycodes, indexed by USER number ("" = unnamed).
@@ -165,7 +201,10 @@ enum Keycode {
             }
             // Modifier wrappers: LSFT(KC_1), LCA(KC_X), HYPR(KC_X) ...
             if let mods = modSymbols(name), let kc = first {
-                let inner = label(kc, context: context)
+                // The wrapper names its own modifiers, so the key inside is never shown shifted.
+                var plain = context
+                plain.shift = .off
+                let inner = label(kc, context: plain)
                 if mods == "⇧", let shifted = shiftedSymbols[inner.primary], inner.secondary == nil {
                     return KeyLabel(primary: shifted, style: inner.style == .none ? .normal : inner.style)
                 }
@@ -214,6 +253,7 @@ enum Keycode {
             return KeyLabel(primary: "U\(n)", style: .special)
         }
         if let l = specials[a] { return l }
+        if let shifted = shiftedLegend(a, context: context) { return KeyLabel(primary: shifted) }
         if let override = context.keyOverrides[a] { return KeyLabel(primary: override) }
         if let t = basic[a] { return KeyLabel(primary: t) }
         if let m = modKeys[a] { return KeyLabel(primary: m, style: .modifier) }
@@ -227,6 +267,28 @@ enum Keycode {
         }
         return KeyLabel(primary: words.joined(separator: " "), style: .special)
     }
+
+    // MARK: - Shifted legends
+
+    /// What a basic key types with Shift, nil when Shift is not in play or the answer is not
+    /// known. With the active layout read (`keyOverrides`), only what that layout says counts;
+    /// without it the legends are the US ones, and so is the shifted table. Letter legends are
+    /// upper case to begin with, so in practice this changes digits and punctuation.
+    static func shiftedLegend(_ a: String, context: LabelContext) -> String? {
+        switch context.shift {
+        case .off: return nil
+        case .capsWord: guard capsWordShifted.contains(a) else { return nil }
+        case .all: break
+        }
+        if !context.keyOverrides.isEmpty { return context.shiftedKeyOverrides[a] }
+        return basic[a].flatMap { shiftedSymbols[$0] }
+    }
+
+    private static let capsWordShifted: Set<String> = {
+        var s: Set<String> = ["KC_MINUS", "KC_MINS"]
+        for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" { s.insert("KC_\(c)") }
+        return s
+    }()
 
     // MARK: - Custom keycodes
 

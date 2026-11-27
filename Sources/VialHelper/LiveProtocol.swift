@@ -1,6 +1,6 @@
 import Foundation
 
-// Parsers for the read-only raw HID replies of the vial_full keymap (0xF3-0xF6; the spec is the
+// Parsers for the read-only raw HID replies of the vial_full keymap (0xF3-0xF7; the spec is the
 // header comment of host_hid.h in the keymap folder). Pure functions from a 32-byte report to a
 // struct, so they can be tested without a keyboard (see LiveSelfTest). Multi-byte fields are
 // little-endian. Every parser returns nil for a report that is too short, has the wrong command
@@ -262,5 +262,51 @@ struct TapHoldInfo: Equatable {
         var out = parts.filter { !$0.hasPrefix("Chordal Hold") && !$0.hasPrefix("Flow Tap") }
         out += [chordal, flow]
         return out
+    }
+}
+
+// MARK: - 0xF7 events (push instead of poll)
+
+/// The keys physically down (0xF7 matrix event, or the reply to [0xF7, 2]).
+struct MatrixEvent: Equatable {
+    var rows: Int
+    var cols: Int
+    /// `KeyPlacement.id`s (row * 100 + col), as in the 0xF6 masks.
+    var pressed: Set<Int>
+
+    static func parse(_ b: [UInt8]) -> MatrixEvent? {
+        guard b.count >= 11, b[0] == 0xF7, b[1] == 2, b[2] == 0 else { return nil }
+        let rows = Int(b[3]), cols = Int(b[4])
+        guard rows > 0, cols > 0, rows * cols <= 48 else { return nil }
+        // Bits past the matrix are not keys, whatever they hold.
+        return MatrixEvent(rows: rows, cols: cols, pressed: LiveReport.matrixMask(b[5..<11], cols: cols).filter { $0 / 100 < rows })
+    }
+}
+
+/// A 0xF7 report the keyboard sends unasked while subscribed.
+enum LiveEvent: Equatable {
+    /// Bytes 2-25 are those of the 0xF4 reply.
+    case state(LiveState)
+    case matrix(MatrixEvent)
+
+    static func parse(_ b: [UInt8]) -> LiveEvent? {
+        guard b.count >= 26, b[0] == 0xF7 else { return nil }
+        switch b[1] {
+        case 1:
+            var asReply = b
+            asReply[0] = 0xF4
+            asReply[1] = 0
+            return LiveState.parse(asReply).map(LiveEvent.state)
+        case 2:
+            return MatrixEvent.parse(b).map(LiveEvent.matrix)
+        default:
+            return nil
+        }
+    }
+
+    /// The ttl the keyboard applied, from the reply to the subscribe request [0xF7, 0, ttl].
+    static func parseSubscribed(_ b: [UInt8]) -> Int? {
+        guard b.count >= 4, b[0] == 0xF7, b[1] == 0, b[2] == 0 else { return nil }
+        return Int(b[3])
     }
 }

@@ -14,17 +14,8 @@ struct KeymapRootView: View {
     private let compactUnit: CGFloat = 32
     private let largeUnit: CGFloat = 56
 
-    /// Names typed in Settings win; otherwise the ones the keyboard's own definition carries (live read).
-    private var customKeycodeNames: [String] {
-        let typed = settings.customKeycodeNameList
-        if typed.contains(where: { !$0.isEmpty }) { return typed }
-        return model.file?.isLive == true ? (model.live.snapshot?.customKeycodeNames ?? typed) : typed
-    }
-
     private var labelContext: LabelContext {
-        LabelContext(tapDances: model.file?.tapDances ?? [], layerNames: settings.layerNameList, keyOverrides: layoutObserver.overrides,
-                     holdAloneLayer: model.holdAloneLayer, customKeycodeNames: customKeycodeNames,
-                     chordalExempt: model.chordalExempt)
+        LabelContext.current(model: model, settings: settings, keyOverrides: layoutObserver.overrides)
     }
 
     var body: some View {
@@ -52,7 +43,7 @@ struct KeymapRootView: View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(model.file?.fileName ?? "Keymap")
                 .font(.system(size: 15, weight: .semibold, design: .rounded))
-            if let s = live.state { indicators(s) }
+            if let s = live.state { LiveIndicators(state: s, context: labelContext) }
             Spacer(minLength: 24)
             if !model.visibleLayers.isEmpty {
                 HStack(spacing: 4) {
@@ -68,30 +59,6 @@ struct KeymapRootView: View {
     private func chipTitle(_ i: Int) -> String {
         if let n = settings.layerName(i) { return "\(i) \(n)" }
         return "\(i)"
-    }
-
-    /// Small status chips next to the title; nothing is drawn while everything is idle.
-    private func indicators(_ s: LiveState) -> some View {
-        var items: [String] = []
-        if s.trainerActive {
-            items.append(s.trainerState == 2 ? "Trainer: results" : s.trainerState == 3 ? "Trainer: nothing typeable" : "Trainer")
-        }
-        if s.capsWord { items.append("Caps Word") }
-        if s.capsLock { items.append("Caps Lock") }
-        if s.oneShotLockedMods != 0 { items.append("one-shot \(LiveReport.modSymbols(s.oneShotLockedMods)) locked") }
-        let pending = s.oneShotMods & ~s.oneShotLockedMods
-        if pending != 0 { items.append("one-shot \(LiveReport.modSymbols(pending))") }
-        if let l = s.oneShotLayer { items.append("one-shot \(labelContext.layerName(l))") }
-        return HStack(spacing: 4) {
-            ForEach(items, id: \.self) { item in
-                Text(item)
-                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(KeyCapView.infoColor.opacity(0.22)))
-                    .fixedSize()
-            }
-        }
     }
 
     private func liveMark(_ layer: Int) -> LayerLiveMark {
@@ -344,6 +311,66 @@ struct KeymapRootView: View {
     }
 }
 
+extension LabelContext {
+    /// The context the overlay and the ghost label keys with.
+    static func current(model: KeymapModel, settings: AppSettings, keyOverrides: [String: String]) -> LabelContext {
+        // Names typed in Settings win; otherwise the ones the keyboard's own definition carries (live read).
+        var names = settings.customKeycodeNameList
+        if !names.contains(where: { !$0.isEmpty }), model.file?.isLive == true {
+            names = model.live.snapshot?.customKeycodeNames ?? names
+        }
+        return LabelContext(tapDances: model.file?.tapDances ?? [], layerNames: settings.layerNameList, keyOverrides: keyOverrides,
+                            holdAloneLayer: model.holdAloneLayer, customKeycodeNames: names,
+                            chordalExempt: model.chordalExempt)
+    }
+}
+
+/// Small status chips (trainer, Caps Word, one-shot…); nothing is drawn while everything is idle.
+struct LiveIndicators: View {
+    let state: LiveState
+    let context: LabelContext
+    /// Held modifiers and locked layers too: the ghost has no layer chips or cards to show them on.
+    var detailed = false
+    var fontSize: CGFloat = 10.5
+    /// Dark plate under every chip, for drawing straight over other windows (ghost mode).
+    var plateOpacity: Double? = nil
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(Self.items(state, context: context, detailed: detailed), id: \.self) { item in
+                Text(item)
+                    .font(.system(size: fontSize, weight: .semibold, design: .rounded))
+                    .legendHalo(plateOpacity != nil, unit: fontSize * 3)
+                    .padding(.horizontal, fontSize * 0.67)
+                    .padding(.vertical, fontSize * 0.19)
+                    .background(Capsule().fill(KeyCapView.infoColor.opacity(0.22)))
+                    .background(Capsule().fill(Color.black.opacity(plateOpacity ?? 0)))
+                    .fixedSize()
+            }
+        }
+    }
+
+    static func items(_ s: LiveState, context: LabelContext, detailed: Bool = false) -> [String] {
+        var items: [String] = []
+        if detailed {
+            // Caps Word's own weak Shift comes and goes with every key; the chip below says it.
+            let held = LiveReport.modSymbols(s.mods | (s.capsWord ? 0 : s.weakMods))
+            if !held.isEmpty { items.append(held) }
+            for l in LiveReport.layers(s.lockedLayers) { items.append("\(context.layerName(l)) locked") }
+        }
+        if s.trainerActive {
+            items.append(s.trainerState == 2 ? "Trainer: results" : s.trainerState == 3 ? "Trainer: nothing typeable" : "Trainer")
+        }
+        if s.capsWord { items.append("Caps Word") }
+        if s.capsLock { items.append("Caps Lock") }
+        if s.oneShotLockedMods != 0 { items.append("one-shot \(LiveReport.modSymbols(s.oneShotLockedMods)) locked") }
+        let pending = s.oneShotMods & ~s.oneShotLockedMods
+        if pending != 0 { items.append("one-shot \(LiveReport.modSymbols(pending))") }
+        if let l = s.oneShotLayer { items.append("one-shot \(context.layerName(l))") }
+        return items
+    }
+}
+
 // MARK: - Layer card
 
 struct LayerCard: View {
@@ -361,14 +388,7 @@ struct LayerCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                // Same blue as the layer legends on the keys (see KeyCapView.secondaryColor).
-                Text("L\(layer)")
-                    .font(.system(size: max(11, unit * 0.32), weight: .bold, design: .rounded))
-                    .foregroundStyle(KeyCapView.layerColor)
-                if let name {
-                    Text(name).font(.system(size: max(11, unit * 0.3), weight: .semibold, design: .rounded))
-                        .foregroundStyle(KeyCapView.layerColor)
-                }
+                LayerTitle(layer: layer, name: name, unit: unit)
                 if layer == context.holdAloneLayer {
                     Text("hold-alone config").font(.system(size: max(10, unit * 0.24), weight: .semibold, design: .rounded))
                         .foregroundStyle(KeyCapView.aloneColor)
@@ -393,6 +413,50 @@ struct LayerCard: View {
     }
 }
 
+/// "L2 Sym": the number and the name from Settings, as the layer cards and the ghost head a layer.
+struct LayerTitle: View {
+    let layer: Int
+    let name: String?
+    let unit: CGFloat
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // Same blue as the layer legends on the keys (see KeyCapView.secondaryColor).
+            Text("L\(layer)")
+                .font(.system(size: max(11, unit * 0.32), weight: .bold, design: .rounded))
+            if let name {
+                Text(name).font(.system(size: max(11, unit * 0.3), weight: .semibold, design: .rounded))
+            }
+        }
+        .foregroundStyle(KeyCapView.layerColor)
+    }
+}
+
+/// How a canvas is drawn where it differs from the overlay (ghost mode sets these).
+struct CanvasStyle: Equatable {
+    /// Opacity of the dark plate under every key and legend chip, for drawing straight over other
+    /// windows; nil = no plates. The legends keep their own opacity and get a dark halo.
+    var plateOpacity: Double? = nil
+    /// Reduced label set in larger type (see `KeyLabel.simplified`).
+    var simplified = false
+    /// Leave out the keys an upper layer inherits from the layers below, so that only what the
+    /// layer changes is drawn.
+    var hideInherited = false
+}
+
+extension View {
+    /// Dark halo that keeps a light legend readable when a bright window shows through its plate.
+    @ViewBuilder
+    func legendHalo(_ on: Bool, unit: CGFloat) -> some View {
+        if on {
+            shadow(color: .black.opacity(0.9), radius: max(0.8, unit * 0.03))
+                .shadow(color: .black.opacity(0.6), radius: max(1.5, unit * 0.07))
+        } else {
+            self
+        }
+    }
+}
+
 /// How a layer relates to the keyboard's live state (all false without live data).
 struct LayerLiveMark: Equatable {
     /// On right now: the highest active layer, or any layer switched on above the default one.
@@ -410,6 +474,13 @@ struct KeyboardCanvas: View {
     var encoderMode: EncoderMode = .both
     var context: LabelContext = LabelContext()
     var misfires: [Int: MisfireBadge] = [:]
+    /// Active layers below `layer`, highest first. A transparent key shows what the first of them
+    /// that is not transparent there holds, dimmed (the way the firmware resolves it). Empty =
+    /// transparent keys are drawn as such.
+    var below: [Int] = []
+    var style = CanvasStyle()
+    /// Non-nil: the keys physically down are marked (ghost mode with "Highlight pressed keys").
+    var pressed: PressedKeys? = nil
 
     var body: some View {
         let keys = file.layers[layer]
@@ -417,8 +488,9 @@ struct KeyboardCanvas: View {
         ZStack(alignment: .topLeading) {
             ForEach(geometry.keys) { k in
                 let code = (k.row < keys.count && k.col < keys[k.row].count) ? keys[k.row][k.col] : "-1"
-                if code != "-1" {
-                    KeyCapView(label: label(code, row: k.row, col: k.col), unit: unit, misfire: misfires[k.id])
+                if code != "-1", !isHidden(code) {
+                    let label = resolvedLabel(code, row: k.row, col: k.col)
+                    KeyCapView(label: style.simplified ? label.simplified : label, unit: unit, misfire: misfires[k.id], style: style)
                         .frame(width: k.width * unit - gap, height: k.height * unit - gap)
                         .rotationEffect(.degrees(k.rotation))
                         .position(x: k.center.x * unit, y: k.center.y * unit)
@@ -429,13 +501,31 @@ struct KeyboardCanvas: View {
                     if i < geometry.encoderAnchors.count, enc.count >= 2, encoderMode.shows(index: i) {
                         EncoderLegend(ccw: Keycode.short(enc[0], context: context),
                                       cw: Keycode.short(enc[1], context: context),
-                                      unit: unit)
+                                      unit: unit, plateOpacity: style.plateOpacity)
                             .position(x: geometry.encoderAnchors[i].x * unit, y: geometry.encoderAnchors[i].y * unit)
                     }
                 }
             }
+            if let pressed { PressedKeysLayer(pressed: pressed, geometry: geometry, unit: unit) }
         }
         .frame(width: geometry.size.width * unit, height: geometry.size.height * unit)
+    }
+
+    /// The diff view: on a layer with active layers below it, what falls through is not drawn.
+    private func isHidden(_ code: String) -> Bool {
+        style.hideInherited && !below.isEmpty && Keycode.isTransparent(code)
+    }
+
+    private func resolvedLabel(_ code: String, row: Int, col: Int) -> KeyLabel {
+        guard Keycode.isTransparent(code), !below.isEmpty else { return label(code, row: row, col: col) }
+        for lower in below {
+            let below = file.keycode(layer: lower, row: row, col: col)
+            if Keycode.isTransparent(below) { continue }
+            var l = label(below, row: row, col: col)
+            l.inherited = true
+            return l
+        }
+        return label(code, row: row, col: col)
     }
 
     private func label(_ code: String, row: Int, col: Int) -> KeyLabel {
@@ -455,10 +545,45 @@ struct KeyboardCanvas: View {
     }
 }
 
+/// The marks on the keys that are down, over the key caps. It alone observes `PressedKeys`, so a
+/// key press redraws these few shapes and none of the caps; idle, nothing here is drawn or
+/// animated. A press shows at once, a release fades out (the afterglow that makes a quick tap
+/// visible).
+struct PressedKeysLayer: View {
+    static let afterglow: TimeInterval = 0.35
+    static let color = Color(red: 1.0, green: 0.82, blue: 0.25)
+
+    @ObservedObject var pressed: PressedKeys
+    let geometry: KeyboardGeometry
+    let unit: CGFloat
+
+    var body: some View {
+        let gap = unit * 0.1, radius = unit * 0.16
+        ZStack(alignment: .topLeading) {
+            ForEach(geometry.keys) { k in
+                let on = pressed.lit.contains(k.id)
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(Self.color.opacity(0.35))
+                    .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .strokeBorder(Self.color, lineWidth: max(1.5, unit * 0.06)))
+                    .frame(width: k.width * unit - gap, height: k.height * unit - gap)
+                    .rotationEffect(.degrees(k.rotation))
+                    .position(x: k.center.x * unit, y: k.center.y * unit)
+                    .opacity(on ? 1 : 0)
+                    .animation(on ? nil : .easeOut(duration: Self.afterglow), value: on)
+            }
+        }
+        .frame(width: geometry.size.width * unit, height: geometry.size.height * unit)
+        .allowsHitTesting(false)
+    }
+}
+
 struct EncoderLegend: View {
     let ccw: String
     let cw: String
     let unit: CGFloat
+    /// See `CanvasStyle.plateOpacity`.
+    var plateOpacity: Double? = nil
 
     var body: some View {
         HStack(spacing: unit * 0.12) {
@@ -467,10 +592,12 @@ struct EncoderLegend: View {
             Text(cw + " ↻")
         }
         .font(.system(size: max(9, unit * 0.24), weight: .medium, design: .rounded))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(plateOpacity == nil ? .secondary : .primary)
+        .legendHalo(plateOpacity != nil, unit: unit)
         .padding(.horizontal, unit * 0.2)
         .padding(.vertical, unit * 0.08)
         .background(Capsule().fill(Color.primary.opacity(0.05)))
+        .background(Capsule().fill(Color.black.opacity(plateOpacity ?? 0)))
         .fixedSize()
     }
 }
@@ -490,10 +617,24 @@ struct KeyCapView: View {
     let unit: CGFloat
     /// Misfire heatmap entry of this key (base layer mod-taps), nil for everything else.
     var misfire: MisfireBadge? = nil
+    var style = CanvasStyle()
 
     var body: some View {
-        let radius = unit * 0.16
         ZStack {
+            plate
+            legends.legendHalo(style.plateOpacity != nil, unit: unit)
+        }
+        .opacity(label.inherited ? 0.45 : 1)
+    }
+
+    /// Everything behind the legends. With a plate (ghost mode) its opacity is the user's
+    /// setting and takes the tint and the outline along; the legends on top are left alone.
+    private var plate: some View {
+        let radius = unit * 0.16
+        return ZStack {
+            if style.plateOpacity != nil {
+                RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Color.black)
+            }
             RoundedRectangle(cornerRadius: radius, style: .continuous).fill(fill)
             if let m = misfire, m.heat > 0 {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
@@ -501,26 +642,35 @@ struct KeyCapView: View {
             }
             RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .strokeBorder(stroke, style: StrokeStyle(lineWidth: 1, dash: label.style == .transparent ? [3, 3] : []))
+        }
+        .opacity(style.plateOpacity ?? 1)
+    }
+
+    private var legends: some View {
+        // The reduced set leaves room for larger type.
+        let primarySize = unit * (style.simplified ? 0.4 : 0.36)
+        let secondarySize = unit * (style.simplified ? 0.25 : 0.2)
+        return ZStack {
             if label.style != .none {
                 VStack(spacing: 0) {
                     Spacer(minLength: 0)
                     Text(label.primary)
-                        .font(.system(size: unit * 0.36, weight: .semibold, design: .rounded))
+                        .font(.system(size: primarySize, weight: .semibold, design: .rounded))
                         .foregroundStyle(primaryColor)
                         .lineLimit(1)
                         .minimumScaleFactor(0.35)
                     Spacer(minLength: 0)
                     if let s = label.secondary {
                         Text(s)
-                            .font(.system(size: unit * 0.2, weight: .semibold, design: .rounded))
+                            .font(.system(size: secondarySize, weight: .semibold, design: .rounded))
                             .foregroundStyle(secondaryColor)
                             .lineLimit(1)
                             .minimumScaleFactor(0.5)
-                            .padding(.bottom, unit * 0.07)
+                            .padding(.bottom, unit * (style.simplified ? 0.05 : 0.07))
                     }
                 }
                 .padding(.horizontal, unit * 0.06)
-                .padding(.top, label.alone != nil ? unit * 0.2 : label.secondary == nil ? 0 : unit * 0.1)
+                .padding(.top, label.alone != nil ? unit * 0.2 : label.secondary == nil ? 0 : unit * (style.simplified ? 0.04 : 0.1))
             }
             if let alone = label.alone {
                 Text(unit >= 40 ? "◔ " + alone : alone)

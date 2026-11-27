@@ -24,7 +24,7 @@ final class KeyboardLink: ObservableObject {
     static let statusRows = 3
     static let statusCols = 5
 
-    let transport = HIDTransport()
+    let transport: HIDTransport
 
     @Published private(set) var isConnected = false
     @Published private(set) var productName: String?
@@ -33,7 +33,9 @@ final class KeyboardLink: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
 
-    private init() {
+    /// `.shared` is the keyboard; a link of its own with a loopback transport is for self-tests.
+    init(transport: HIDTransport = HIDTransport()) {
+        self.transport = transport
         transport.$productName
             .sink { [weak self] in self?.productName = $0 }
             .store(in: &cancellables)

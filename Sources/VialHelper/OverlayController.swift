@@ -68,6 +68,9 @@ final class OverlayController {
     private var lastHiddenAt = Date.distantPast
 
     var isVisible: Bool { panel.isVisible }
+    var isKey: Bool { panel.isKeyWindow }
+    /// Called with true when the overlay opens and false when it closes (the ghost steps aside).
+    var onVisibilityChange: ((Bool) -> Void)?
 
     func toggle() {
         if isVisible {
@@ -85,6 +88,7 @@ final class OverlayController {
         panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
         LiveKeyboard.shared.setOverlayVisible(true)
+        onVisibilityChange?(true)
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.12
             panel.animator().alphaValue = 1
@@ -96,6 +100,7 @@ final class OverlayController {
         lastHiddenAt = Date()
         panel.orderOut(nil)
         LiveKeyboard.shared.setOverlayVisible(false)
+        onVisibilityChange?(false)
     }
 
     /// Debug helper: feeds a key event straight into the panel.

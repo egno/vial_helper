@@ -33,6 +33,12 @@ import Compression
 //     FE 0D 01/03/05 i  tap dance / combo / key override i   [status 0, 10-byte entry, 0...]
 //                     (u16 fields little-endian: the structs of quantum/vial.h as stored)
 //
+// A 0xF7 subscription (LiveKeyboard) may be running during a read: the keyboard then sends
+// state / matrix events between the replies. `HIDTransport` takes those out by their exact
+// shape before any of the matching above, so none can stand in for a reply (a definition page
+// would accept anything). Of the replies here only a definition page could itself have that
+// shape, which takes 32 bytes of XZ data that begin f7 01 00 / f7 02 00 and end in zeros.
+//
 // While an unlock is in progress the firmware answers every non-Vial command with the
 // unchanged request (`goto skip`), which would read as an all-zero keymap; the read therefore
 // checks FE 05 first and gives up if one is running.

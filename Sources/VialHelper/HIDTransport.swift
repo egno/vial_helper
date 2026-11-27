@@ -30,6 +30,11 @@ import IOKit.hid
 //   true for is the reply. Give `accept` whatever the reply layout allows checking, so a stray
 //   report (the Vial GUI's reply, a late one) is not mistaken for it.
 // - `sendWithoutReply` writes one report synchronously and waits for nothing (app shutdown).
+// - Unsolicited 0xF7 events (see `eventKind`) are taken out of the stream before any reply
+//   matching and handed to `onEvent`: they are never the reply to a request and never end one,
+//   whatever its prefix or `accept` would have let through (a Vial definition page accepts any
+//   report). The one exception is the request for that very report ([0xF7, 1] / [0xF7, 2]).
+// - `HIDTransport(loopback:)` talks to a closure instead of a device (self-tests).
 // - With several matching keyboards the first one found is used.
 
 enum HIDReply: Equatable {
@@ -70,6 +75,10 @@ final class HIDTransport: ObservableObject {
     /// Non-nil when IOKit refused to open the HID interface (e.g. a privacy denial).
     @Published private(set) var openError: Int32?
 
+    /// Unsolicited 0xF7 reports (state / matrix events), on the main thread, in the order they
+    /// arrived and in order with the request completions. Set before `start`.
+    var onEvent: (([UInt8]) -> Void)?
+
     private struct Request {
         let bytes: [UInt8]
         let timeout: TimeInterval
@@ -77,6 +86,59 @@ final class HIDTransport: ObservableObject {
         /// Non-nil: no prefix matching, the first report this accepts is the reply.
         var accept: (([UInt8]) -> Bool)? = nil
         let completion: (HIDReply) -> Void
+    }
+
+    /// What an incoming report is to the request in flight (if any).
+    enum Disposition: Equatable {
+        /// An unsolicited 0xF7 event: goes to `onEvent`, the request in flight keeps waiting.
+        case event
+        case reply(HIDReply)
+        /// Someone else's reply (e.g. the Vial GUI's), or a late one.
+        case ignore
+    }
+
+    static let eventsID: UInt8 = 0xF7
+
+    /// 1 (state) or 2 (matrix) when `report` has the exact shape of a 0xF7 event, else nil.
+    /// Deliberately strict (status 0, the zero tail, a sane layer count / matrix size), so that
+    /// a reply without a prefix of its own, such as a page of the compressed Vial definition
+    /// or a definition size of 503 bytes (f7 01 00 00), is not mistaken for an event.
+    static func eventKind(_ report: [UInt8]) -> Int? {
+        guard report.count >= reportSize, report[0] == eventsID, report[2] == 0 else { return nil }
+        switch report[1] {
+        case 1:
+            // Byte 25 is the number of layers; 26-31 are always 0.
+            guard (1...32).contains(report[25]), !report[26..<reportSize].contains(where: { $0 != 0 }) else { return nil }
+            return 1
+        case 2:
+            let positions = Int(report[3]) * Int(report[4])
+            guard (1...48).contains(positions), !report[11..<reportSize].contains(where: { $0 != 0 }) else { return nil }
+            return 2
+        default:
+            return nil
+        }
+    }
+
+    /// The whole reply matching, as a pure function (tested in LiveSelfTest). `sent` is the
+    /// request in flight, zero-padded.
+    static func classify(_ bytes: [UInt8], sent: [UInt8]?, matchPrefix n: Int, accept: (([UInt8]) -> Bool)?) -> Disposition {
+        guard bytes.count >= reportSize else { return .ignore }
+        let report = Array(bytes[..<reportSize])
+        if eventKind(report) != nil {
+            // Asked for by [0xF7, 1] / [0xF7, 2], the same bytes are that request's reply.
+            let askedFor = sent.map { accept == nil && $0[0] == eventsID && $0[1] == report[1] } ?? false
+            if !askedFor { return .event }
+        }
+        guard let sent else { return .ignore }
+        if let accept {
+            if report[0] == unhandledID, sent[0] != unhandledID, report[1...] == sent[1...] { return .reply(.unhandled(report)) }
+            return accept(report) ? .reply(.reply(report)) : .ignore
+        }
+        if report[0] == unhandledID, sent[0] != unhandledID {
+            // An unknown command comes back with byte 0 replaced; the rest of the prefix still echoes.
+            return report[1..<n] == sent[1..<n] ? .reply(.unhandled(report)) : .ignore
+        }
+        return report[..<n] == sent[..<n] ? .reply(.reply(report)) : .ignore
     }
 
     // Everything below is touched on `queue` only.
@@ -87,9 +149,29 @@ final class HIDTransport: ObservableObject {
     private var waiting: [Request] = []
     private var inFlight: (id: Int, request: Request)?
     private var nextID = 0
+    /// Self-tests: stands in for the device. Called on `queue` with every report written;
+    /// what it returns comes back as input reports, in order.
+    private let loopback: (([UInt8]) -> [[UInt8]])?
+
+    init() { loopback = nil }
+
+    /// A transport without a device: `responder` plays the keyboard (see `loopback`).
+    init(loopback responder: @escaping ([UInt8]) -> [[UInt8]]) { loopback = responder }
+
+    /// Loopback only: a report the "keyboard" sends unasked.
+    func injectReport(_ bytes: [UInt8]) {
+        queue.async { [self] in handle(bytes) }
+    }
 
     /// Starts watching for the keyboard. Safe to call more than once.
     func start() {
+        if loopback != nil {
+            DispatchQueue.main.async { [self] in
+                productName = "Loopback"
+                isConnected = true
+            }
+            return
+        }
         queue.async { [self] in
             guard manager == nil else { return }
             let m = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
@@ -158,16 +240,20 @@ final class HIDTransport: ObservableObject {
     func sendWithoutReply(_ bytes: [UInt8]) -> Bool {
         guard !bytes.isEmpty, bytes.count <= Self.reportSize else { return false }
         let padded = bytes + [UInt8](repeating: 0, count: Self.reportSize - bytes.count)
-        return queue.sync {
-            guard let device = current else { return false }
-            return write(padded, to: device) == kIOReturnSuccess
-        }
+        return queue.sync { write(padded) == kIOReturnSuccess }
     }
 
     // MARK: - Queue side
 
-    private func write(_ bytes: [UInt8], to device: IOHIDDevice) -> IOReturn {
-        IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, 0, bytes, bytes.count)
+    /// nil when there is nothing to write to.
+    private func write(_ bytes: [UInt8]) -> IOReturn? {
+        if let loopback {
+            let reports = loopback(bytes)
+            queue.async { [self] in reports.forEach(handle) }
+            return kIOReturnSuccess
+        }
+        guard let device = current else { return nil }
+        return IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, 0, bytes, bytes.count)
     }
 
     private func finish(_ request: Request, _ reply: HIDReply) {
@@ -177,11 +263,10 @@ final class HIDTransport: ObservableObject {
     private func pump() {
         while inFlight == nil, !waiting.isEmpty {
             let request = waiting.removeFirst()
-            guard let device = current else {
+            guard let result = write(request.bytes) else {
                 finish(request, .notConnected)
                 continue
             }
-            let result = write(request.bytes, to: device)
             guard result == kIOReturnSuccess else {
                 finish(request, .sendFailed(result))
                 continue
@@ -199,33 +284,25 @@ final class HIDTransport: ObservableObject {
     }
 
     private func reportReceived(_ bytes: [UInt8], from sender: UnsafeMutableRawPointer?) {
-        guard let pending = inFlight, let device = current,
-              sender == Unmanaged.passUnretained(device).toOpaque(),
-              bytes.count >= Self.reportSize else { return }
-        let sent = pending.request.bytes
-        let n = pending.request.matchPrefix
-        let reply: HIDReply
-        if let accept = pending.request.accept {
+        guard let device = current, sender == Unmanaged.passUnretained(device).toOpaque() else { return }
+        handle(bytes)
+    }
+
+    private func handle(_ bytes: [UInt8]) {
+        let pending = inFlight
+        switch Self.classify(bytes, sent: pending?.request.bytes, matchPrefix: pending?.request.matchPrefix ?? 0,
+                             accept: pending?.request.accept) {
+        case .event:
             let report = Array(bytes[..<Self.reportSize])
-            if report[0] == Self.unhandledID, sent[0] != Self.unhandledID, report[1...] == sent[1...] {
-                reply = .unhandled(report)
-            } else if accept(report) {
-                reply = .reply(report)
-            } else {
-                return
-            }
-        } else if bytes[0] == Self.unhandledID, sent[0] != Self.unhandledID {
-            // An unknown command comes back with byte 0 replaced; the rest of the prefix still echoes.
-            guard bytes[1..<n] == sent[1..<n] else { return }
-            reply = .unhandled(bytes)
-        } else if bytes[..<n] == sent[..<n] {
-            reply = .reply(Array(bytes[..<Self.reportSize]))
-        } else {
-            return // someone else's reply (e.g. the Vial GUI's), or a late one
+            DispatchQueue.main.async { [self] in onEvent?(report) }
+        case .reply(let reply):
+            guard let pending else { return }
+            inFlight = nil
+            finish(pending.request, reply)
+            pump()
+        case .ignore:
+            break
         }
-        inFlight = nil
-        finish(pending.request, reply)
-        pump()
     }
 
     private func deviceAdded(_ device: IOHIDDevice) {

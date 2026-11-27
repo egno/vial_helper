@@ -33,6 +33,12 @@ struct KeyCombo: Codable, Equatable {
         keyName: "K"
     )
 
+    static let defaultGhostCombo = KeyCombo(
+        keyCode: UInt32(kVK_ANSI_G),
+        modifiers: NSEvent.ModifierFlags([.control, .option, .command]).rawValue,
+        keyName: "G"
+    )
+
     /// Builds a combo from a key-down event, or nil if the event is not a usable shortcut.
     static func from(event: NSEvent) -> KeyCombo? {
         let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
@@ -86,6 +92,48 @@ enum EncoderMode: String, CaseIterable, Identifiable {
         case .none: return false
         }
     }
+}
+
+/// Where the ghost sits on the active screen.
+enum GhostPosition: String, CaseIterable, Identifiable {
+    case bottomLeft, bottom, bottomRight, topLeft, top, topRight
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .bottomLeft: return "Bottom left"
+        case .bottom: return "Bottom"
+        case .bottomRight: return "Bottom right"
+        case .topLeft: return "Top left"
+        case .top: return "Top"
+        case .topRight: return "Top right"
+        }
+    }
+    var isTop: Bool { self == .topLeft || self == .top || self == .topRight }
+    /// 0 = left edge, 0.5 = centred, 1 = right edge.
+    var horizontal: CGFloat {
+        switch self {
+        case .bottomLeft, .topLeft: return 0
+        case .bottom, .top: return 0.5
+        case .bottomRight, .topRight: return 1
+        }
+    }
+}
+
+/// When the ghost is on screen while ghost mode is on. The layer-dependent modes need the
+/// keyboard's 0xF4 live state; without it they behave as `always`.
+enum GhostVisibility: String, CaseIterable, Identifiable {
+    case always, nonBase, fadeOnBase, whileTyping
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .always: return "Always"
+        case .nonBase: return "Only on other layers"
+        case .fadeOnBase: return "Fades out on the base layer"
+        case .whileTyping: return "While typing"
+        }
+    }
+    /// The modes that hide the ghost after `AppSettings.ghostHideDelay` without activity.
+    var hidesWhenIdle: Bool { self == .fadeOnBase || self == .whileTyping }
 }
 
 final class AppSettings: ObservableObject {
@@ -161,6 +209,106 @@ final class AppSettings: ObservableObject {
     @Published var keymapSource: KeymapSourceSetting =
         KeymapSourceSetting(rawValue: UserDefaults.standard.string(forKey: "keymapSource") ?? "") ?? .keyboard {
         didSet { defaults.set(keymapSource.rawValue, forKey: "keymapSource") }
+    }
+
+    // MARK: Ghost mode (see GhostOverlay.swift)
+
+    /// The click-through keymap of the active layer is on screen.
+    @Published var ghostMode: Bool = UserDefaults.standard.bool(forKey: "ghostMode") {
+        didSet { defaults.set(ghostMode, forKey: "ghostMode") }
+    }
+
+    /// Global shortcut that toggles ghost mode; nil = none.
+    @Published var ghostHotKey: KeyCombo? = AppSettings.loadCombo("ghostHotKey", fallback: .defaultGhostCombo) {
+        didSet { AppSettings.saveCombo(ghostHotKey, key: "ghostHotKey") }
+    }
+
+    /// Opacity of the ghost's dark plates, `ghostOpacityRange`; the legends on them stay opaque.
+    @Published var ghostOpacity: Double = AppSettings.clamped(UserDefaults.standard.object(forKey: "ghostOpacity") as? Double ?? 0.55, ghostOpacityRange) {
+        didSet { defaults.set(ghostOpacity, forKey: "ghostOpacity") }
+    }
+
+    /// Key unit of the ghost in points, `ghostSizeRange`.
+    @Published var ghostSize: Double = AppSettings.clamped(UserDefaults.standard.object(forKey: "ghostSize") as? Double ?? 36, ghostSizeRange) {
+        didSet { defaults.set(ghostSize, forKey: "ghostSize") }
+    }
+
+    @Published var ghostPosition: GhostPosition =
+        GhostPosition(rawValue: UserDefaults.standard.string(forKey: "ghostPosition") ?? "") ?? .bottom {
+        didSet { defaults.set(ghostPosition.rawValue, forKey: "ghostPosition") }
+    }
+
+    /// The ghost keeps to the tap legend and the hold legend of tap-hold keys, in larger type
+    /// (see `KeyLabel.simplified`). On by default.
+    @Published var ghostSimplifiedLabels: Bool = AppSettings.bool("ghostSimplifiedLabels", default: true) {
+        didSet { defaults.set(ghostSimplifiedLabels, forKey: "ghostSimplifiedLabels") }
+    }
+
+    /// On upper layers the ghost leaves out the keys inherited from the layers below (a diff view).
+    @Published var ghostHideInherited: Bool = AppSettings.bool("ghostHideInherited", default: false) {
+        didSet { defaults.set(ghostHideInherited, forKey: "ghostHideInherited") }
+    }
+
+    /// The ghost marks the keys that are physically down (0xF7 matrix events, see LiveKeyboard).
+    /// Off by default: it has the keyboard tell the host which key positions are pressed.
+    @Published var ghostHighlightPressed: Bool = AppSettings.bool("ghostHighlightPressed", default: false) {
+        didSet { defaults.set(ghostHighlightPressed, forKey: "ghostHighlightPressed") }
+    }
+
+    /// `bool(forKey:)` rather than a cast, so `-key YES` on the command line works for renders.
+    private static func bool(_ key: String, default fallback: Bool) -> Bool {
+        UserDefaults.standard.object(forKey: key) == nil ? fallback : UserDefaults.standard.bool(forKey: key)
+    }
+
+    /// When the ghost is shown while ghost mode is on.
+    @Published var ghostVisibility: GhostVisibility =
+        GhostVisibility(rawValue: UserDefaults.standard.string(forKey: "ghostVisibility") ?? "") ?? .always {
+        didSet { defaults.set(ghostVisibility.rawValue, forKey: "ghostVisibility") }
+    }
+
+    /// The ghost fades almost away while the pointer is over it (it cannot be clicked anyway).
+    /// Seconds without activity after which the ghost fades out (`GhostVisibility.hidesWhenIdle`).
+    @Published var ghostHideDelay: Double = AppSettings.clamped(UserDefaults.standard.object(forKey: "ghostHideDelay") as? Double ?? 3, ghostHideDelayRange) {
+        didSet { defaults.set(ghostHideDelay, forKey: "ghostHideDelay") }
+    }
+    static let ghostHideDelayRange = 1.0...15.0
+
+    @Published var ghostAvoidPointer: Bool = UserDefaults.standard.object(forKey: "ghostAvoidPointer") as? Bool ?? true {
+        didSet { defaults.set(ghostAvoidPointer, forKey: "ghostAvoidPointer") }
+    }
+
+    /// Keeps the ghost out of screenshots and screen sharing.
+    @Published var ghostHideFromSharing: Bool = UserDefaults.standard.bool(forKey: "ghostHideFromSharing") {
+        didSet { defaults.set(ghostHideFromSharing, forKey: "ghostHideFromSharing") }
+    }
+
+    /// Places chosen with "Move Ghost…", per screen (display UUID): the fraction [x, y] of the free
+    /// room in the screen's visible frame, so a place survives a resolution change. A screen
+    /// without an entry uses `ghostPosition`.
+    @Published var ghostCustomPlaces: [String: [Double]] =
+        UserDefaults.standard.dictionary(forKey: "ghostCustomPlaces") as? [String: [Double]] ?? [:] {
+        didSet { defaults.set(ghostCustomPlaces, forKey: "ghostCustomPlaces") }
+    }
+
+    static let ghostOpacityRange = 0.2...1.0
+    static let ghostSizeRange = 24.0...56.0
+
+    private static func clamped(_ v: Double, _ range: ClosedRange<Double>) -> Double { min(max(v, range.lowerBound), range.upperBound) }
+
+    /// A stored shortcut: absent = `fallback`, empty data = deliberately none.
+    private static func loadCombo(_ key: String, fallback: KeyCombo?) -> KeyCombo? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return fallback }
+        return data.isEmpty ? nil : try? JSONDecoder().decode(KeyCombo.self, from: data)
+    }
+
+    private static func saveCombo(_ combo: KeyCombo?, key: String) {
+        UserDefaults.standard.set(combo.flatMap { try? JSONEncoder().encode($0) } ?? Data(), forKey: key)
+    }
+
+    func hotKey(for slot: HotKeySlot) -> KeyCombo? { slot == .ghost ? ghostHotKey : hotKey }
+
+    func setHotKey(_ combo: KeyCombo?, for slot: HotKeySlot) {
+        if slot == .ghost { ghostHotKey = combo } else { hotKey = combo }
     }
 
     static let holdAloneOff = -1
