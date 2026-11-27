@@ -33,6 +33,13 @@ final class OverlayController {
     private var panel: KeymapPanel!
     private var hosting: NSHostingView<KeymapRootView>!
     private var cancellables = Set<AnyCancellable>()
+    /// The scale the keymap is drawn at: 1, or less when it would not fit the screen.
+    private(set) var contentScale: CGFloat = 1
+    /// Layers side by side in the view of all layers.
+    private(set) var contentColumns = 2
+    static let columnChoices = 2...4
+    /// Room left around the panel on the screen.
+    private static let screenMargin: CGFloat = 24
 
     init(model: KeymapModel, settings: AppSettings) {
         self.model = model
@@ -69,6 +76,12 @@ final class OverlayController {
 
     var isVisible: Bool { panel.isVisible }
     var isKey: Bool { panel.isKeyWindow }
+    /// The whole panel is on its screen and shows all of the keymap (nothing cut off).
+    var fitsScreen: Bool {
+        guard let visible = (panel.screen ?? NSScreen.main)?.visibleFrame else { return false }
+        let fitting = hosting.fittingSize
+        return visible.contains(panel.frame) && fitting.width <= panel.frame.width + 1 && fitting.height <= panel.frame.height + 1
+    }
     /// Called with true when the overlay opens and false when it closes (the ghost steps aside).
     var onVisibilityChange: ((Bool) -> Void)?
 
@@ -180,19 +193,48 @@ final class OverlayController {
     }
 
     private func fitToContent() {
-        hosting.layoutSubtreeIfNeeded()
-        var size = hosting.fittingSize
         let screen = screenForPlacement()
         let visible = screen.visibleFrame
-        // Keep the panel on screen.
-        size.width = min(size.width, visible.width - 40)
-        size.height = min(size.height, visible.height - 40)
+        let room = CGSize(width: visible.width - Self.screenMargin * 2, height: visible.height - Self.screenMargin * 2)
+        // All layers at once are larger than a laptop display in one arrangement or another:
+        // the one that suits this screen best is taken, and drawn smaller if it still does not fit.
+        let all = model.selectedLayer == nil && model.visibleLayers.count > 2
+        let choices = all ? Array(Self.columnChoices.prefix { $0 <= model.visibleLayers.count }) : [contentColumns]
+        let sizes = choices.map { naturalSize(columns: $0) }
+        let best = Self.bestFit(sizes: sizes, room: room)
+        let columns = choices[best], natural = sizes[best]
+        let scale = Self.scale(natural: natural, room: room)
+        if abs(scale - contentScale) > 0.001 || columns != contentColumns {
+            contentScale = scale
+            contentColumns = columns
+            hosting.rootView = KeymapRootView(model: model, settings: settings, scale: scale, columns: columns)
+        }
+        hosting.layoutSubtreeIfNeeded()
+        let size = CGSize(width: (natural.width * scale).rounded(.up), height: (natural.height * scale).rounded(.up))
         panel.setContentSize(size)
         let origin = NSPoint(
             x: visible.midX - size.width / 2,
             y: visible.midY - size.height / 2
         )
         panel.setFrameOrigin(origin)
+    }
+
+    /// The size of the keymap at full scale with that many layers side by side, measured off screen.
+    private func naturalSize(columns: Int) -> CGSize {
+        NSHostingView(rootView: KeymapRootView(model: model, settings: settings, columns: columns)).fittingSize
+    }
+
+    /// Which of the sizes fills `room` best: the one that can be drawn largest, and among those
+    /// that fit as they are the one with the most room to spare on its tighter side.
+    static func bestFit(sizes: [CGSize], room: CGSize) -> Int {
+        func ratio(_ s: CGSize) -> CGFloat { s.width > 0 && s.height > 0 ? min(room.width / s.width, room.height / s.height) : 0 }
+        return sizes.indices.max { ratio(sizes[$0]) < ratio(sizes[$1]) } ?? 0
+    }
+
+    /// The scale at which content of the size `natural` fits into `room`; never enlarged.
+    static func scale(natural: CGSize, room: CGSize) -> CGFloat {
+        guard natural.width > 0, natural.height > 0, room.width > 0, room.height > 0 else { return 1 }
+        return min(1, room.width / natural.width, room.height / natural.height)
     }
 
     private func screenForPlacement() -> NSScreen {

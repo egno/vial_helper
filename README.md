@@ -42,6 +42,8 @@ Menu-bar app for macOS that shows the keymap of your Vial-configured split keybo
   second), on connect and again in the background each time the overlay opens, so edits made in the Vial GUI show
   up without re-exporting. The header shows "<keyboard> · live" instead of the file name. The `.vil` is used while
   the keyboard is away or a read fails.
+- The overlay always fits the screen it opens on: all layers are laid out two, three or four side by side,
+  whichever can be drawn largest there, and drawn smaller when even that is too big.
 - Overlay shows all non-empty layers at once (layers with only transparent/unassigned keys are hidden); press `0`–`9` to zoom into a layer, `a` for all,
   `←`/`→` to cycle, `Esc` to close. Clicking anywhere else also closes it.
 - Shows mod-taps (hold modifier under the tap key), layer-taps, combos and encoder bindings.
@@ -116,6 +118,7 @@ Requires the Swift toolchain (Command Line Tools are enough, no Xcode needed), m
 swift run VialHelper --show                     # launch with the overlay already open
 swift run VialHelper --render out.png           # render the overlay to a PNG and exit
 swift run VialHelper --render out.png --layer 1 # render a single layer
+swift run VialHelper --render out.png --columns 3 # all layers, three side by side (the overlay picks 2-4 per screen)
 swift run VialHelper --render out.png --chordal-exempt 303,304,305  # mark keys (row*100+col) as Chordal Hold exempt
 swift run VialHelper --render out.png --ghost   # render the ghost-mode view (layer from --inject-state, see below)
                                                 # over a light-to-dark backdrop; --ghost-opacity 0.3 sets the plate opacity,

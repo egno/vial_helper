@@ -10,6 +10,10 @@ struct KeymapRootView: View {
     @ObservedObject var live = LiveKeyboard.shared
     /// Opaque background for off-screen rendering (materials do not render there).
     var plainBackground = false
+    /// Below 1 when the keymap at its natural size is larger than the screen (see OverlayController).
+    var scale: CGFloat = 1
+    /// Layers side by side when all are shown; the overlay picks what suits the screen.
+    var columns = 2
 
     private let compactUnit: CGFloat = 32
     private let largeUnit: CGFloat = 56
@@ -19,6 +23,13 @@ struct KeymapRootView: View {
     }
 
     var body: some View {
+        // Drawn smaller, and taking only that much room.
+        ScaledLayout(scale: scale) {
+            natural.scaleEffect(scale, anchor: .topLeading)
+        }
+    }
+
+    private var natural: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             if let file = model.file, let geometry = model.geometry {
@@ -100,7 +111,7 @@ struct KeymapRootView: View {
                       liveMark: liveMark(s), misfires: misfireBadges(layer: s))
         } else {
             let visible = model.visibleLayers
-            let columns = visible.count > 1 ? 2 : 1
+            let columns = max(1, min(self.columns, visible.count))
             let rows = stride(from: 0, to: visible.count, by: columns).map { start in
                 Array(visible[start..<min(start + columns, visible.count)])
             }
@@ -745,6 +756,21 @@ struct KeyCapView: View {
 }
 
 // MARK: - Flow layout (wrapping HStack)
+
+/// Gives its only subview its natural size and reports that size times `scale`; the subview is
+/// expected to draw itself scaled by the same factor from its top left corner.
+struct ScaledLayout: Layout {
+    var scale: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let s = subviews.first?.sizeThatFits(.unspecified) ?? .zero
+        return CGSize(width: s.width * scale, height: s.height * scale)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: .unspecified)
+    }
+}
 
 struct FlowLayout: Layout {
     var spacing: CGFloat = 6

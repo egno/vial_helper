@@ -311,6 +311,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.show()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
             check("overlay visible after show", overlay.isVisible)
+            check("overlay fits its screen (\(overlay.contentColumns) columns, scale \(String(format: "%.2f", overlay.contentScale)))", overlay.fitsScreen)
+            check("overlay columns: the arrangement that suits the screen",
+                  OverlayController.bestFit(sizes: [CGSize(width: 1000, height: 1070), CGSize(width: 1500, height: 850), CGSize(width: 2000, height: 640)],
+                                            room: CGSize(width: 1420, height: 870)) == 1)
+            check("overlay scale: shrinks to the tighter side, never enlarges",
+                  OverlayController.scale(natural: CGSize(width: 1000, height: 1000), room: CGSize(width: 2000, height: 500)) == 0.5 &&
+                  OverlayController.scale(natural: CGSize(width: 100, height: 100), room: CGSize(width: 2000, height: 500)) == 1)
             check("hotkey registered", HotKeyCenter.shared.isRegistered)
             overlay.simulateKey(code: 18, characters: "1")
             check("digit selects layer 1", model.selectedLayer == 1)
@@ -452,13 +459,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LiveDebug.applyRenderInjection(model: model)
         // `--ghost` renders the ghost-mode view instead (the layer comes from `--inject-state`).
         let ghostView = args.contains("--ghost")
+        // Debug: `--columns 3` sets the layers side by side (the overlay picks this per screen).
+        let columns = args.firstIndex(of: "--columns").flatMap { $0 + 1 < args.count ? Int(args[$0 + 1]) : nil } ?? 2
         let rendered: NSImage? = MainActor.assumeIsolated {
             if ghostView {
                 let renderer = ImageRenderer(content: GhostView(model: model, settings: settings, plainBackground: true))
                 renderer.scale = 2
                 return renderer.nsImage
             }
-            let renderer = ImageRenderer(content: KeymapRootView(model: model, settings: settings, plainBackground: true))
+            let renderer = ImageRenderer(content: KeymapRootView(model: model, settings: settings, plainBackground: true, columns: columns))
             renderer.scale = 2
             return renderer.nsImage
         }
