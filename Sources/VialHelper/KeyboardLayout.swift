@@ -17,6 +17,9 @@ final class KeyboardLayoutObserver: ObservableObject {
     /// QMK keycode -> the character its physical position types under the active layout.
     @Published private(set) var overrides: [String: String] = [:]
 
+    /// Two-letter tag of the active input source ("EN", "RU"), "" if unknown.
+    @Published private(set) var inputSourceShortName = ""
+
     /// QMK keycode -> physical key position, discovered from the US layout (see type doc).
     private lazy var referencePositions: [String: CGKeyCode] = Self.discoverReferencePositions()
 
@@ -57,7 +60,22 @@ final class KeyboardLayoutObserver: ObservableObject {
         return result
     }
 
+    /// Primary language of the selected input source, else the tail of its ID
+    /// ("com.apple.keylayout.Russian" -> "RU").
+    private static func currentShortName() -> String {
+        guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return "" }
+        func property(_ key: CFString) -> AnyObject? {
+            TISGetInputSourceProperty(source, key).map { Unmanaged<AnyObject>.fromOpaque($0).takeUnretainedValue() }
+        }
+        let language = (property(kTISPropertyInputSourceLanguages) as? [String])?.first
+        let idTail = (property(kTISPropertyInputSourceID) as? String)?.split(separator: ".").last.map(String.init)
+        let letters = (language ?? idTail ?? "").unicodeScalars.filter { $0.isASCII && $0.properties.isAlphabetic }
+        return String(String.UnicodeScalarView(letters.prefix(2))).uppercased()
+    }
+
     @objc private func refresh() {
+        let shortName = Self.currentShortName()
+        if shortName != inputSourceShortName { inputSourceShortName = shortName }
         guard !referencePositions.isEmpty,
               let layoutData = Self.currentKeyLayoutData() else {
             overrides = [:]

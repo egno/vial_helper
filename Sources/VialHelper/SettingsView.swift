@@ -7,6 +7,7 @@ final class SettingsUIState: ObservableObject {
     @Published var recording = false
     @Published var loginEnabled = SMAppService.mainApp.status == .enabled
     @Published var loginError: String?
+    @Published var customKeycodeError: String?
     var monitor: Any?
 }
 
@@ -39,6 +40,11 @@ struct SettingsView: View {
                 }
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                Picker("Keymap source", selection: $settings.keymapSource) {
+                    ForEach(KeymapSourceSetting.allCases) { Text($0.title).tag($0) }
+                }
+                Text(model.liveNote ?? "The keyboard's keymap is read over the Vial protocol (read-only) each time the overlay opens; the file is used while the keyboard is away.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Global shortcut") {
@@ -65,6 +71,19 @@ struct SettingsView: View {
                 Text("Comma-separated, in layer order. Optional.").font(.caption).foregroundStyle(.secondary)
             }
 
+            Section("Custom keycode names") {
+                HStack {
+                    TextField("", text: $settings.customKeycodeNames, prompt: Text("Jiggle, Trainer…"))
+                        .labelsHidden()
+                        .multilineTextAlignment(.leading)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: .infinity)
+                    Button("Load from vial.json…", action: loadCustomKeycodeNames)
+                }
+                Text(ui.customKeycodeError ?? "Comma-separated, in USER00, USER01… (QK_KB_n) order. Optional.")
+                    .font(.caption).foregroundStyle(ui.customKeycodeError == nil ? Color.secondary : Color.red)
+            }
+
             Section("Hold-alone actions") {
                 Picker("Config layer", selection: $settings.holdAloneLayer) {
                     Text("Off").tag(AppSettings.holdAloneOff)
@@ -81,6 +100,10 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 Text("Slot 0 is the left half, slot 1 the right half. Hide the half you have no encoder on.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Show clock and input source on the keyboard OLED", isOn: $settings.oledStatus)
+                Toggle("Follow the active layer", isOn: $settings.followActiveLayer)
+                Text("With one layer zoomed, the overlay switches to the layer that is active on the keyboard. Needs firmware that reports its live state.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Launch at login", isOn: Binding(
                     get: { ui.loginEnabled },
@@ -105,6 +128,22 @@ struct SettingsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             settings.vilPath = url.path
         }
+    }
+
+    /// Fills the custom keycode names from `customKeycodes[].shortName` of a chosen vial.json.
+    private func loadCustomKeycodeNames() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose the keyboard's vial.json"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let data = try? Data(contentsOf: url), let names = Keycode.customKeycodeNames(vialJSON: data) else {
+            ui.customKeycodeError = "No \"customKeycodes\" list in \(url.lastPathComponent)."
+            return
+        }
+        ui.customKeycodeError = nil
+        settings.customKeycodeNames = names.joined(separator: ", ")
     }
 
     private func startRecording() {

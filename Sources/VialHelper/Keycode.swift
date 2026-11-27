@@ -11,6 +11,8 @@ struct KeyLabel: Equatable {
     var style: Style = .normal
     /// Hold-alone action (held past the tapping term and released without other keys).
     var alone: String? = nil
+    /// Exempt from the Chordal Hold same-hand rule (only set on tap-hold keys).
+    var chordalExempt = false
 
     static let none = KeyLabel(primary: "", style: .none)
     static let transparent = KeyLabel(primary: "▽", style: .transparent)
@@ -25,6 +27,10 @@ struct LabelContext {
     var keyOverrides: [String: String] = [:]
     /// Layer holding hold-alone actions, nil when the feature is off.
     var holdAloneLayer: Int? = nil
+    /// Names of the firmware's custom keycodes, indexed by USER number ("" = unnamed).
+    var customKeycodeNames: [String] = []
+    /// `KeyPlacement.id`s exempt from the Chordal Hold same-hand rule.
+    var chordalExempt: Set<Int> = []
 
     func layerName(_ n: Int) -> String {
         if n < layerNames.count, !layerNames[n].isEmpty { return layerNames[n] }
@@ -201,6 +207,12 @@ enum Keycode {
         if a.hasPrefix("M"), let n = Int(a.dropFirst()) {
             return KeyLabel(primary: "M\(n)", secondary: "macro", style: .special)
         }
+        if let n = customKeycodeIndex(a) {
+            if n < context.customKeycodeNames.count, !context.customKeycodeNames[n].isEmpty {
+                return KeyLabel(primary: context.customKeycodeNames[n], style: .special)
+            }
+            return KeyLabel(primary: "U\(n)", style: .special)
+        }
         if let l = specials[a] { return l }
         if let override = context.keyOverrides[a] { return KeyLabel(primary: override) }
         if let t = basic[a] { return KeyLabel(primary: t) }
@@ -216,7 +228,41 @@ enum Keycode {
         return KeyLabel(primary: words.joined(separator: " "), style: .special)
     }
 
+    // MARK: - Custom keycodes
+
+    /// Index of a keyboard-level custom keycode: Vial's `USER00` and QMK's `QK_KB_0` are the same key.
+    static func customKeycodeIndex(_ a: String) -> Int? {
+        for p in ["USER", "QK_KB_", "KB_"] where a.hasPrefix(p) {
+            let digits = a.dropFirst(p.count)
+            if !digits.isEmpty, digits.allSatisfy(\.isASCII), digits.allSatisfy(\.isNumber) { return Int(digits) }
+        }
+        return a == "QK_KB" ? 0 : nil
+    }
+
+    /// `customKeycodes[].shortName` of a Vial keyboard definition (`vial.json`), in USER-number order.
+    static func customKeycodeNames(vialJSON data: Data) -> [String]? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = root["customKeycodes"] as? [[String: Any]] else { return nil }
+        return list.map { entry in
+            let name = (entry["shortName"] as? String) ?? (entry["name"] as? String) ?? ""
+            // The settings field is comma-separated and single-line.
+            return name.replacingOccurrences(of: ",", with: " ").replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+        }
+    }
+
     // MARK: - Modifier symbols
+
+    /// 8-bit QMK modifier mask (`MOD_BIT_*`: bits 0-3 left ⌃⇧⌥⌘, bits 4-7 right) -> ["⌃", "L⇧"].
+    /// A side is spelled out only when just one side of that modifier is in the mask.
+    static func modBitsSymbols(_ bits: Int) -> [String] {
+        var out: [String] = []
+        for (i, sym) in ["⌃", "⇧", "⌥", "⌘"].enumerated() {
+            let l = bits & (1 << i) != 0, r = bits & (1 << (i + 4)) != 0
+            if l && r { out.append(sym) } else if l { out.append("L" + sym) } else if r { out.append("R" + sym) }
+        }
+        return out
+    }
 
     private static let modBase: [String: String] = [
         "LCTL": "⌃", "CTL": "⌃", "C": "⌃", "RCTL": "⌃",

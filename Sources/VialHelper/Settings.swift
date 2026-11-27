@@ -98,6 +98,8 @@ final class AppSettings: ObservableObject {
         static let layerNames = "layerNames"
         static let encoderMode = "encoderMode"
         static let holdAloneLayer = "holdAloneLayer"
+        static let oledStatus = "oledStatus"
+        static let customKeycodeNames = "customKeycodeNames"
     }
 
     static let defaultPath = "~/aurora.vil"
@@ -122,6 +124,16 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(layerNames, forKey: Key.layerNames) }
     }
 
+    /// Comma-separated names of the firmware's custom keycodes (USER00, USER01, …), e.g. "Jiggle, Trainer".
+    @Published var customKeycodeNames: String {
+        didSet { defaults.set(customKeycodeNames, forKey: Key.customKeycodeNames) }
+    }
+
+    /// Custom keycode names indexed by USER number ("" where unnamed).
+    var customKeycodeNameList: [String] {
+        customKeycodeNames.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
     /// Which encoder legends to draw.
     @Published var encoderMode: EncoderMode {
         didSet { defaults.set(encoderMode.rawValue, forKey: Key.encoderMode) }
@@ -133,14 +145,34 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(holdAloneLayer, forKey: Key.holdAloneLayer) }
     }
 
+    /// Feed the clock and input source to the keyboard's right OLED (see StatusFeeder).
+    @Published var oledStatus: Bool {
+        didSet { defaults.set(oledStatus, forKey: Key.oledStatus) }
+    }
+
+    /// With a single layer zoomed, the overlay switches to the keyboard's highest active layer
+    /// as it changes (needs firmware with the 0xF4 live state; see LiveKeyboard). Off by default.
+    @Published var followActiveLayer: Bool = UserDefaults.standard.object(forKey: "followActiveLayer") as? Bool ?? true {
+        didSet { defaults.set(followActiveLayer, forKey: "followActiveLayer") }
+    }
+
+    /// Where the overlay's keymap comes from: the `.vil` file, or the keyboard itself (read over
+    /// the Vial protocol) whenever it is connected, with the file as fallback. See VialLiveKeymap.
+    @Published var keymapSource: KeymapSourceSetting =
+        KeymapSourceSetting(rawValue: UserDefaults.standard.string(forKey: "keymapSource") ?? "") ?? .keyboard {
+        didSet { defaults.set(keymapSource.rawValue, forKey: "keymapSource") }
+    }
+
     static let holdAloneOff = -1
     static let holdAloneLast = -2
 
     private init() {
         holdAloneLayer = defaults.object(forKey: Key.holdAloneLayer) == nil ? AppSettings.holdAloneOff : defaults.integer(forKey: Key.holdAloneLayer)
         encoderMode = EncoderMode(rawValue: defaults.string(forKey: Key.encoderMode) ?? "") ?? .both
+        oledStatus = defaults.object(forKey: Key.oledStatus) == nil ? true : defaults.bool(forKey: Key.oledStatus)
         vilPath = defaults.string(forKey: Key.vilPath) ?? AppSettings.defaultPath
         layerNames = defaults.string(forKey: Key.layerNames) ?? ""
+        customKeycodeNames = defaults.string(forKey: Key.customKeycodeNames) ?? ""
         if let data = defaults.data(forKey: Key.hotKey) {
             hotKey = data.isEmpty ? nil : try? JSONDecoder().decode(KeyCombo.self, from: data)
         } else {

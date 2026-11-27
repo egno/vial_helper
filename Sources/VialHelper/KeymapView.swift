@@ -6,15 +6,25 @@ struct KeymapRootView: View {
     @ObservedObject var model: KeymapModel
     @ObservedObject var settings: AppSettings
     @ObservedObject private var layoutObserver = KeyboardLayoutObserver.shared
+    /// Live keyboard data (misfire heatmap, active / locked layers, indicators).
+    @ObservedObject var live = LiveKeyboard.shared
     /// Opaque background for off-screen rendering (materials do not render there).
     var plainBackground = false
 
     private let compactUnit: CGFloat = 32
     private let largeUnit: CGFloat = 56
 
+    /// Names typed in Settings win; otherwise the ones the keyboard's own definition carries (live read).
+    private var customKeycodeNames: [String] {
+        let typed = settings.customKeycodeNameList
+        if typed.contains(where: { !$0.isEmpty }) { return typed }
+        return model.file?.isLive == true ? (model.live.snapshot?.customKeycodeNames ?? typed) : typed
+    }
+
     private var labelContext: LabelContext {
         LabelContext(tapDances: model.file?.tapDances ?? [], layerNames: settings.layerNameList, keyOverrides: layoutObserver.overrides,
-                     holdAloneLayer: model.holdAloneLayer)
+                     holdAloneLayer: model.holdAloneLayer, customKeycodeNames: customKeycodeNames,
+                     chordalExempt: model.chordalExempt)
     }
 
     var body: some View {
@@ -23,7 +33,11 @@ struct KeymapRootView: View {
             if let file = model.file, let geometry = model.geometry {
                 content(file: file, geometry: geometry)
                 if !file.combos.isEmpty { combos(file) }
+                if !file.keyOverrides.isEmpty { keyOverrides(file) }
                 if let h = model.holdAloneLayer { holdAloneNotes(file, geometry: geometry, layer: h) }
+                if showsChordalMarker(file, geometry: geometry) { chordalNote }
+                if showsMisfires { misfireNote }
+                if let line = tapHoldParts(file), !line.isEmpty { tapHoldLine(line) }
             } else {
                 errorView
             }
@@ -38,6 +52,7 @@ struct KeymapRootView: View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(model.file?.fileName ?? "Keymap")
                 .font(.system(size: 15, weight: .semibold, design: .rounded))
+            if let s = live.state { indicators(s) }
             Spacer(minLength: 24)
             if !model.visibleLayers.isEmpty {
                 HStack(spacing: 4) {
@@ -55,10 +70,51 @@ struct KeymapRootView: View {
         return "\(i)"
     }
 
+    /// Small status chips next to the title; nothing is drawn while everything is idle.
+    private func indicators(_ s: LiveState) -> some View {
+        var items: [String] = []
+        if s.trainerActive {
+            items.append(s.trainerState == 2 ? "Trainer: results" : s.trainerState == 3 ? "Trainer: nothing typeable" : "Trainer")
+        }
+        if s.capsWord { items.append("Caps Word") }
+        if s.capsLock { items.append("Caps Lock") }
+        if s.oneShotLockedMods != 0 { items.append("one-shot \(LiveReport.modSymbols(s.oneShotLockedMods)) locked") }
+        let pending = s.oneShotMods & ~s.oneShotLockedMods
+        if pending != 0 { items.append("one-shot \(LiveReport.modSymbols(pending))") }
+        if let l = s.oneShotLayer { items.append("one-shot \(labelContext.layerName(l))") }
+        return HStack(spacing: 4) {
+            ForEach(items, id: \.self) { item in
+                Text(item)
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(KeyCapView.infoColor.opacity(0.22)))
+                    .fixedSize()
+            }
+        }
+    }
+
+    private func liveMark(_ layer: Int) -> LayerLiveMark {
+        guard let s = live.state else { return LayerLiveMark() }
+        // The default layer is always on; it only counts as active when nothing is above it.
+        let active = layer == s.highestLayer || s.isMomentary(layer)
+        return LayerLiveMark(active: active, highest: layer == s.highestLayer, locked: s.isLocked(layer))
+    }
+
     private func layerChip(index: Int?, title: String) -> some View {
         let selected = model.selectedLayer == index
+        let mark = index.map { liveMark($0) } ?? LayerLiveMark()
         return Button { model.select(index) } label: {
-            Text(title)
+            HStack(spacing: 4) {
+                if mark.active {
+                    Circle().fill(selected ? Color.white : Color.accentColor)
+                        .opacity(mark.highest ? 1 : 0.55)
+                        .frame(width: 6, height: 6)
+                }
+                Text(title)
+                if mark.locked { Image(systemName: "lock.fill").font(.system(size: 9, weight: .semibold)) }
+            }
+                .fixedSize()
                 .font(.system(size: 12, weight: selected ? .semibold : .regular, design: .rounded))
                 .padding(.horizontal, 9)
                 .padding(.vertical, 4)
@@ -73,7 +129,8 @@ struct KeymapRootView: View {
     @ViewBuilder
     private func content(file: VilFile, geometry: KeyboardGeometry) -> some View {
         if let s = model.selectedLayer, s < file.layers.count {
-            LayerCard(file: file, geometry: geometry, layer: s, name: settings.layerName(s), unit: largeUnit, encoderMode: settings.encoderMode, context: labelContext)
+            LayerCard(file: file, geometry: geometry, layer: s, name: settings.layerName(s), unit: largeUnit, encoderMode: settings.encoderMode, context: labelContext,
+                      liveMark: liveMark(s), misfires: misfireBadges(layer: s))
         } else {
             let visible = model.visibleLayers
             let columns = visible.count > 1 ? 2 : 1
@@ -84,9 +141,11 @@ struct KeymapRootView: View {
                 ForEach(rows, id: \.self) { row in
                     HStack(alignment: .top, spacing: 36) {
                         ForEach(row, id: \.self) { i in
-                            LayerCard(file: file, geometry: geometry, layer: i, name: settings.layerName(i), unit: compactUnit, encoderMode: settings.encoderMode, context: labelContext)
+                            LayerCard(file: file, geometry: geometry, layer: i, name: settings.layerName(i), unit: compactUnit, encoderMode: settings.encoderMode, context: labelContext,
+                                      liveMark: liveMark(i), misfires: misfireBadges(layer: i))
                                 .padding(12)
                                 .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.04)))
+                                .overlay(activeOutline(liveMark(i)))
                                 .contentShape(Rectangle())
                                 .onTapGesture { model.select(i) }
                         }
@@ -115,6 +174,118 @@ struct KeymapRootView: View {
                 }
             }
         }
+    }
+
+    private func keyOverrides(_ file: VilFile) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Key overrides").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            FlowLayout(spacing: 6) {
+                ForEach(Array(file.keyOverrides.enumerated()), id: \.offset) { _, ko in
+                    HStack(spacing: 4) {
+                        Text(overrideTrigger(ko))
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                        Text("→").foregroundStyle(.secondary).font(.system(size: 10))
+                        Text(Keycode.short(ko.replacement, context: labelContext))
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.accentColor)
+                        if let note = overrideNote(ko, layerCount: file.layers.count) {
+                            Text(note).font(.system(size: 10, weight: .medium, design: .rounded))
+                                .foregroundStyle(KeyCapView.layerColor)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.primary.opacity(0.06)))
+                }
+            }
+        }
+    }
+
+    /// "⇧ + ⌫", or "⌃ / ⇧ + ⌫" when any one of the modifiers is enough, plus "(no ⌥)" for negative mods.
+    private func overrideTrigger(_ ko: KeyOverride) -> String {
+        let mods = Keycode.modBitsSymbols(ko.triggerMods).joined(separator: ko.anyOneMod ? " / " : " + ")
+        var parts = mods.isEmpty ? [] : [mods]
+        if !Keycode.isEmpty(ko.trigger) { parts.append(Keycode.short(ko.trigger, context: labelContext)) }
+        var text = parts.joined(separator: " + ")
+        let negative = Keycode.modBitsSymbols(ko.negativeMods)
+        if !negative.isEmpty { text += " (no \(negative.joined(separator: " ")))" }
+        return text
+    }
+
+    private func overrideNote(_ ko: KeyOverride, layerCount: Int) -> String? {
+        guard let layers = ko.layerRestriction(layerCount: layerCount) else { return nil }
+        return "on " + layers.map { labelContext.layerName($0) }.joined(separator: ", ")
+    }
+
+    /// The marker is drawn only on tap-hold keys, so the legend appears only if one is on screen.
+    private func showsChordalMarker(_ file: VilFile, geometry: KeyboardGeometry) -> Bool {
+        guard !model.chordalExempt.isEmpty else { return false }
+        let shown = model.selectedLayer.map { [$0] } ?? model.visibleLayers
+        return shown.contains { layer in
+            geometry.keys.contains { k in
+                model.chordalExempt.contains(k.id) && Keycode.isTapHold(file.keycode(layer: layer, row: k.row, col: k.col))
+            }
+        }
+    }
+
+    private var chordalNote: some View {
+        HStack(spacing: 4) {
+            Text(KeyCapView.chordalMark).foregroundStyle(KeyCapView.chordalColor)
+            Text("exempt from Chordal Hold: holds with keys on the same hand too")
+        }
+        .font(.system(size: 10.5))
+        .foregroundStyle(.secondary)
+    }
+
+    /// Accent outline of a layer card that is active on the keyboard right now.
+    @ViewBuilder
+    private func activeOutline(_ mark: LayerLiveMark) -> some View {
+        if mark.active {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.accentColor.opacity(mark.highest ? 0.9 : 0.4), lineWidth: mark.highest ? 2 : 1.5)
+        }
+    }
+
+    // MARK: Misfire heatmap (base layer only)
+
+    private static let misfireLayer = 0
+
+    private func misfireBadges(layer: Int) -> [Int: MisfireBadge] {
+        guard layer == Self.misfireLayer, live.showMisfires else { return [:] }
+        return live.misfireBadges
+    }
+
+    /// The legend (and the `m` hint) appear only when there is something to explain.
+    private var misfiresAvailable: Bool {
+        live.misfires.contains { $0.heldMisfires > 0 || $0.tappedMisfires > 0 }
+            && (model.selectedLayer == nil ? model.visibleLayers.contains(Self.misfireLayer) : model.selectedLayer == Self.misfireLayer)
+    }
+
+    private var showsMisfires: Bool { live.showMisfires && misfiresAvailable }
+
+    private var misfireNote: some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 2).fill(KeyCapView.misfireColor.opacity(0.45)).frame(width: 9, height: 9)
+            Text(model.selectedLayer == nil
+                 ? "mod-tap misfires on L\(Self.misfireLayer) since power-up, relative between keys (\(Self.misfireLayer) shows counts)"
+                 : "mod-tap misfires since power-up: left held by mistake, right tapped by mistake (typos count too); compare keys, not numbers")
+        }
+        .font(.system(size: 10.5))
+        .foregroundStyle(.secondary)
+    }
+
+    /// Tap-hold phrases of the .vil, with Chordal Hold / Flow Tap as the keyboard applies them
+    /// right now when it can tell (0xF6).
+    private func tapHoldParts(_ file: VilFile) -> [String]? {
+        let parts = file.settings?.tapHoldSummary
+        guard let info = live.tapHold else { return parts }
+        return info.correcting(parts ?? [])
+    }
+
+    private func tapHoldLine(_ parts: [String]) -> some View {
+        Text(parts.joined(separator: " · "))
+            .font(.system(size: 10.5))
+            .foregroundStyle(.secondary)
     }
 
     /// Legend for the teal hold-alone legends, plus bindings the firmware will never send.
@@ -156,6 +327,7 @@ struct KeymapRootView: View {
             hint("0–9", "layer")
             hint("a", "all")
             hint("←→", "switch")
+            if misfiresAvailable { hint("m", live.showMisfires ? "hide misfires" : "misfires") }
             if let hk = settings.hotKey { hint(hk.display, "toggle") }
         }
         .font(.system(size: 10.5))
@@ -182,6 +354,9 @@ struct LayerCard: View {
     let unit: CGFloat
     var encoderMode: EncoderMode = .both
     var context: LabelContext = LabelContext()
+    var liveMark = LayerLiveMark()
+    /// Misfire badges by `KeyPlacement.id`; empty on every layer but the base one.
+    var misfires: [Int: MisfireBadge] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -198,10 +373,33 @@ struct LayerCard: View {
                     Text("hold-alone config").font(.system(size: max(10, unit * 0.24), weight: .semibold, design: .rounded))
                         .foregroundStyle(KeyCapView.aloneColor)
                 }
+                if liveMark.locked {
+                    Label("locked", systemImage: "lock.fill")
+                        .labelStyle(.titleAndIcon)
+                        .font(.system(size: max(9.5, unit * 0.22), weight: .semibold, design: .rounded))
+                        .foregroundStyle(KeyCapView.layerColor)
+                }
+                if liveMark.active {
+                    Text("active")
+                        .font(.system(size: max(9.5, unit * 0.22), weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.accentColor.opacity(liveMark.highest ? 0.85 : 0.5)))
+                }
             }
-            KeyboardCanvas(file: file, geometry: geometry, layer: layer, unit: unit, encoderMode: encoderMode, context: context)
+            KeyboardCanvas(file: file, geometry: geometry, layer: layer, unit: unit, encoderMode: encoderMode, context: context, misfires: misfires)
         }
     }
+}
+
+/// How a layer relates to the keyboard's live state (all false without live data).
+struct LayerLiveMark: Equatable {
+    /// On right now: the highest active layer, or any layer switched on above the default one.
+    var active = false
+    var highest = false
+    /// Held on by Layer Lock.
+    var locked = false
 }
 
 struct KeyboardCanvas: View {
@@ -211,6 +409,7 @@ struct KeyboardCanvas: View {
     let unit: CGFloat
     var encoderMode: EncoderMode = .both
     var context: LabelContext = LabelContext()
+    var misfires: [Int: MisfireBadge] = [:]
 
     var body: some View {
         let keys = file.layers[layer]
@@ -219,7 +418,7 @@ struct KeyboardCanvas: View {
             ForEach(geometry.keys) { k in
                 let code = (k.row < keys.count && k.col < keys[k.row].count) ? keys[k.row][k.col] : "-1"
                 if code != "-1" {
-                    KeyCapView(label: label(code, row: k.row, col: k.col), unit: unit)
+                    KeyCapView(label: label(code, row: k.row, col: k.col), unit: unit, misfire: misfires[k.id])
                         .frame(width: k.width * unit - gap, height: k.height * unit - gap)
                         .rotationEffect(.degrees(k.rotation))
                         .position(x: k.center.x * unit, y: k.center.y * unit)
@@ -241,6 +440,7 @@ struct KeyboardCanvas: View {
 
     private func label(_ code: String, row: Int, col: Int) -> KeyLabel {
         var l = Keycode.label(code, context: context)
+        if context.chordalExempt.contains(row * 100 + col), Keycode.isTapHold(code) { l.chordalExempt = true }
         guard let h = context.holdAloneLayer else { return l }
         if layer == h {
             if let why = file.holdAloneProblem(layer: h, row: row, col: col) {
@@ -282,14 +482,23 @@ struct KeyCapView: View {
     static let modColor = Color.purple
     static let infoColor = Color.orange
     static let aloneColor = Color.teal
+    static let chordalColor = Color.secondary
+    static let chordalMark = "✱"
+    static let misfireColor = Color.red
 
     let label: KeyLabel
     let unit: CGFloat
+    /// Misfire heatmap entry of this key (base layer mod-taps), nil for everything else.
+    var misfire: MisfireBadge? = nil
 
     var body: some View {
         let radius = unit * 0.16
         ZStack {
             RoundedRectangle(cornerRadius: radius, style: .continuous).fill(fill)
+            if let m = misfire, m.heat > 0 {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(KeyCapView.misfireColor.opacity(0.06 + 0.3 * m.heat))
+            }
             RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .strokeBorder(stroke, style: StrokeStyle(lineWidth: 1, dash: label.style == .transparent ? [3, 3] : []))
             if label.style != .none {
@@ -323,7 +532,31 @@ struct KeyCapView: View {
                     .padding(.horizontal, unit * 0.08)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
+            // Counts only fit the zoomed key caps; the all-layers view keeps to the tint.
+            if let m = misfire, unit >= 40 {
+                if m.held > 0 { misfireCount(m.held, alignment: .bottomLeading) }
+                if m.tapped > 0 { misfireCount(m.tapped, alignment: .bottomTrailing) }
+            }
+            if label.chordalExempt {
+                Text(KeyCapView.chordalMark)
+                    .font(.system(size: max(6, unit * 0.16), weight: .bold))
+                    .foregroundStyle(KeyCapView.chordalColor)
+                    .padding(.top, unit * 0.06)
+                    .padding(.leading, unit * 0.09)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
         }
+    }
+
+    /// Held misfires sit bottom left, tapped ones bottom right, beside the hold legend.
+    private func misfireCount(_ n: Int, alignment: Alignment) -> some View {
+        Text(n > 999 ? "999+" : "\(n)")
+            .font(.system(size: max(6.5, unit * 0.17), weight: .semibold, design: .rounded))
+            .foregroundStyle(KeyCapView.misfireColor.opacity(0.85))
+            .lineLimit(1)
+            .padding(.bottom, unit * 0.05)
+            .padding(.horizontal, unit * 0.09)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
     }
 
     private var fill: Color {

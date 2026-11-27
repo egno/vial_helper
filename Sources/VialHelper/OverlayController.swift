@@ -46,6 +46,20 @@ final class OverlayController {
             }
             .store(in: &cancellables)
 
+        // Live keyboard data can add or remove a line (misfire legend, indicators); resize only
+        // when the content size really changed, so a layer switch does not re-centre the panel.
+        LiveKeyboard.shared.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                DispatchQueue.main.async {
+                    guard let self, self.panel.isVisible else { return }
+                    self.hosting.layoutSubtreeIfNeeded()
+                    let fitting = self.hosting.fittingSize, current = self.panel.frame.size
+                    if abs(fitting.width - current.width) > 0.5 || abs(fitting.height - current.height) > 0.5 { self.fitToContent() }
+                }
+            }
+            .store(in: &cancellables)
+
         NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in
             self?.hide()
         }
@@ -70,6 +84,7 @@ final class OverlayController {
         fitToContent()
         panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
+        LiveKeyboard.shared.setOverlayVisible(true)
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.12
             panel.animator().alphaValue = 1
@@ -80,6 +95,7 @@ final class OverlayController {
         guard panel.isVisible else { return }
         lastHiddenAt = Date()
         panel.orderOut(nil)
+        LiveKeyboard.shared.setOverlayVisible(false)
     }
 
     /// Debug helper: feeds a key event straight into the panel.
@@ -149,6 +165,10 @@ final class OverlayController {
         }
         if chars == "a" || chars == "`" {
             model.select(nil)
+            return true
+        }
+        if chars == "m" {
+            LiveKeyboard.shared.toggleMisfires()
             return true
         }
         return false

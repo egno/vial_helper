@@ -8,6 +8,9 @@ final class KeymapModel: ObservableObject {
     @Published var selectedLayer: Int?
     /// Mirrors `AppSettings.holdAloneLayer`.
     @Published var holdAloneSetting = AppSettings.holdAloneOff
+    /// Keys exempt from the Chordal Hold same-hand rule, as `KeyPlacement.id` (row * 100 + col).
+    /// Empty until fetched from the keyboard.
+    @Published var chordalExempt: Set<Int> = []
 
     private(set) var geometry: KeyboardGeometry?
     private var loadedPath: String?
@@ -24,24 +27,51 @@ final class KeymapModel: ObservableObject {
         return n >= 0 && n < file.layers.count ? n : nil
     }
 
-    /// Re-reads the file when the path or its modification date changed.
+    /// The keymap as read from the keyboard (VialKeymapSource.swift). While it has one, `file`
+    /// is that keymap (`file.isLive`); otherwise `file` is the `.vil` on disk.
+    let live = VialLiveKeymap()
+    /// Reading from the keyboard, or why its keymap is not the one shown; nil when there is nothing to say.
+    @Published private(set) var liveNote: String?
+    private var fileKeymap: VilFile?
+    private var fileError: String?
+
+    init() {
+        live.onChange = { [weak self] in self?.publish() }
+    }
+
+    /// Re-reads the file when the path or its modification date changed, and has the keyboard's
+    /// keymap re-read in the background (the overlay calls this every time it opens).
     func reloadIfNeeded(path: String, force: Bool = false) {
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
         let modified = attrs?[.modificationDate] as? Date
-        if !force, path == loadedPath, modified == loadedModified, file != nil { return }
-        loadedPath = path
-        loadedModified = modified
-        do {
-            let f = try VilFile.load(path: path)
-            geometry = KeyboardGeometry.make(for: f)
-            file = f
-            error = nil
-            if let s = selectedLayer, !f.nonEmptyLayers.contains(s), s != holdAloneLayer { selectedLayer = nil }
-        } catch {
-            file = nil
-            geometry = nil
-            self.error = error.localizedDescription
+        if force || path != loadedPath || modified != loadedModified || fileKeymap == nil {
+            loadedPath = path
+            loadedModified = modified
+            do {
+                fileKeymap = try VilFile.load(path: path)
+                fileError = nil
+            } catch {
+                fileKeymap = nil
+                fileError = error.localizedDescription
+            }
+            // Matrix shape for a live read that cannot get the keyboard definition.
+            live.fallback = fileKeymap.map(VialReader.Fallback.init(file:)) ?? VialReader.Fallback()
         }
+        publish()
+        live.refresh(force: force)
+    }
+
+    /// Shows the live keymap if there is one, else the file. Publishes only what changed.
+    private func publish() {
+        let shown = live.keymap ?? fileKeymap
+        let newError = shown == nil ? (fileError ?? "Not loaded") : nil
+        if shown != file {
+            geometry = shown.map { KeyboardGeometry.make(for: $0) }
+            file = shown
+            if let f = shown, let s = selectedLayer, !f.nonEmptyLayers.contains(s), s != holdAloneLayer { selectedLayer = nil }
+        }
+        if newError != error { error = newError }
+        if live.note != liveNote { liveNote = live.note }
     }
 
     func select(_ index: Int?) {
