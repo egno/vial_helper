@@ -129,7 +129,8 @@ struct GhostPresence: Equatable {
     /// The highest active layer is the base layer; nil without the 0xF4 live state.
     var onBase: Bool?
     /// Nothing has happened for `AppSettings.ghostHideDelay`: no layer change and, as far as key
-    /// presses are known (always in `whileTyping`, else with "Highlight pressed keys"), no key.
+    /// presses are known (always in `whileTyping`, else with "Highlight pressed keys"), no key
+    /// pressed or held.
     var baseIdle = false
     /// The pointer is inside the ghost's frame (false when that setting is off).
     var pointerInside = false
@@ -246,8 +247,6 @@ final class GhostController {
     private static let fadeDuration: TimeInterval = 0.15
     /// The fade after `AppSettings.ghostHideDelay`: slow, it is not a reaction to anything.
     private static let idleFadeDuration: TimeInterval = 0.6
-    /// How often the system is asked for key activity in `GhostVisibility.whileTyping`.
-    private static let activityInterval: TimeInterval = 0.1
 
     private let model: KeymapModel
     private let settings: AppSettings
@@ -264,7 +263,6 @@ final class GhostController {
     private(set) var targetAlpha: CGFloat = 1
     private var baseIdleTimer: Timer?
     private var pointerTimer: Timer?
-    private var activityTimer: Timer?
     private var lastHideDelay: Double
     /// Highest layer and active mask of the last live state, to tell a layer change from other news.
     private var lastLayers: [UInt32]?
@@ -306,7 +304,8 @@ final class GhostController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.liveStateChanged($0) }
             .store(in: &cancellables)
-        // Fires only with "Highlight pressed keys" on (the app does not look at the keys otherwise).
+        // Fires in `whileTyping` and with "Highlight pressed keys" on (the app does not look at
+        // the keys otherwise).
         LiveKeyboard.shared.pressed.presses
             .sink { [weak self] in self?.keyPressed() }
             .store(in: &cancellables)
@@ -341,7 +340,7 @@ final class GhostController {
         LiveKeyboard.shared.setGhostVisible(true)
         armBaseIdle()
         syncPointerTimer()
-        syncActivityTimer()
+        syncWantsPresses()
         // A window of the same app getting the focus on another display posts nothing to observe.
         let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.followScreen() }
         t.tolerance = 0.3
@@ -358,7 +357,7 @@ final class GhostController {
         LiveKeyboard.shared.setGhostVisible(false)
         armBaseIdle()
         syncPointerTimer()
-        syncActivityTimer()
+        syncWantsPresses()
     }
 
     /// The full overlay shows the same keymap: the ghost steps aside while it is open.
@@ -435,7 +434,10 @@ final class GhostController {
         baseIdleTimer = nil
         guard panel.isVisible, presence.canIdle, !presence.baseIdle else { return }
         let t = Timer(timeInterval: settings.ghostHideDelay, repeats: false) { [weak self] _ in
-            self?.update(duration: GhostController.idleFadeDuration) { $0.baseIdle = true }
+            guard let self else { return }
+            // A key of the keyboard is still held (a Shift, a key that repeats): not idle yet.
+            if LiveKeyboard.shared.reportsPresses, !LiveKeyboard.shared.pressed.down.isEmpty { return self.armBaseIdle() }
+            self.update(duration: GhostController.idleFadeDuration) { $0.baseIdle = true }
         }
         RunLoop.main.add(t, forMode: .common)
         baseIdleTimer = t
@@ -461,30 +463,12 @@ final class GhostController {
     }
 
     /// `GhostVisibility.whileTyping` needs every key press, also of keys the keyboard's state says
-    /// nothing about. The system tells how long ago the last key went down and which modifiers
-    /// are held, without any permission and without seeing which key it was; that is asked a few
-    /// times a second while the mode is on. It counts keys of any keyboard.
-    private func syncActivityTimer() {
-        let wanted = panel.isVisible && settings.ghostVisibility == .whileTyping
-        if wanted, activityTimer == nil {
-            let t = Timer(timeInterval: Self.activityInterval, repeats: true) { [weak self] _ in
-                if GhostController.keyActivity(within: GhostController.activityInterval * 2) { self?.keyPressed() }
-            }
-            t.tolerance = 0.03
-            RunLoop.main.add(t, forMode: .common)
-            activityTimer = t
-        } else if !wanted {
-            activityTimer?.invalidate()
-            activityTimer = nil
-        }
-    }
-
-    /// A key went down in the last `window` seconds, or a modifier is being held (a held Shift
-    /// sends nothing while it is held). Caps Lock is a state, not a held key.
-    static func keyActivity(within window: TimeInterval) -> Bool {
-        if CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) < window { return true }
-        let held: CGEventFlags = [.maskShift, .maskControl, .maskAlternate, .maskCommand]
-        return !CGEventSource.flagsState(.combinedSessionState).intersection(held).isEmpty
+    /// nothing about. The keyboard reports them itself (0xF7 matrix events, `pressed.presses`),
+    /// so only its keys count: typing on another keyboard does not bring the ghost up. While it
+    /// does not report them (firmware without 0xF7, no subscription because Vial is talking to
+    /// the keyboard) only a layer change does.
+    private func syncWantsPresses() {
+        LiveKeyboard.shared.setGhostWantsPresses(panel.isVisible && settings.ghostVisibility == .whileTyping)
     }
 
     /// Runs after any setting changed (and once at start).
@@ -500,7 +484,7 @@ final class GhostController {
             armBaseIdle()
         }
         syncPointerTimer()
-        syncActivityTimer()
+        syncWantsPresses()
         // Picking a corner is asking for the corner: the hand-picked place of this screen goes.
         if settings.ghostPosition != lastPosition {
             lastPosition = settings.ghostPosition
@@ -639,6 +623,16 @@ enum GhostWindowSelfTest {
         check("ghost while typing: hidden when idle, a held layer keeps it, works without the state",
               alpha(.whileTyping, base) == 1 && alpha(.whileTyping, base, idle: true) == 0 && alpha(.whileTyping, nav, idle: true) == 1 &&
               alpha(.whileTyping, nil, known: false, idle: true) == 0)
+        // "While typing" without the highlight: presses are noticed, nothing is lit.
+        let keys = PressedKeys()
+        var presses = 0
+        let counting = keys.presses.sink { presses += 1 }
+        keys.set([3], light: false)
+        keys.set([3], light: false) // a renewal repeats the matrix: not a press
+        keys.set([3, 7], light: false)
+        keys.set([7], light: false) // a release
+        counting.cancel()
+        check("ghost while typing: the keyboard's presses count once each, unlit", presses == 2 && keys.down == [7] && keys.lit.isEmpty)
         check("ghost fades on base: only after the wait", alpha(.fadeOnBase, base) == 1 && alpha(.fadeOnBase, base, idle: true) == 0 && alpha(.fadeOnBase, nav, idle: true) == 1)
         check("ghost layer modes without live state: as always",
               alpha(.nonBase, nil, known: false) == 1 && alpha(.fadeOnBase, nil, known: false, idle: true) == 1)

@@ -35,9 +35,10 @@ final class LiveKeyboard: ObservableObject {
     /// nil while disconnected or when the firmware has no 0xF6.
     @Published private(set) var tapHold: TapHoldInfo?
 
-    /// The keys physically down (0xF7 matrix events), for the ghost's highlight. An object of its
-    /// own: a key press must not redraw everything that observes the rest of the live data.
-    /// Stays empty unless `usesMatrix`.
+    /// The keys physically down (0xF7 matrix events), for the ghost's highlight and for its
+    /// "While typing" visibility. An object of its own: a key press must not redraw everything
+    /// that observes the rest of the live data. Stays empty unless `tracksMatrix`; `lit` only
+    /// with `usesMatrix`.
     let pressed = PressedKeys()
 
     /// Requests sent per command id since launch (debug: `--live-probe`).
@@ -49,7 +50,7 @@ final class LiveKeyboard: ObservableObject {
     private(set) var pushActive = false
     /// Debug / self-tests: stands in for the "Highlight pressed keys" setting.
     var matrixOverride: Bool? {
-        didSet { if !usesMatrix { pressed.clear() } }
+        didSet { syncPressed() }
     }
     /// Self-tests shorten the subscription.
     var pushTTL = LiveKeyboard.pushTTL
@@ -90,6 +91,8 @@ final class LiveKeyboard: ObservableObject {
     private var renewTimer: Timer?
     private var vialGUIRunning = false
     private var highlightPressed = false
+    /// The ghost hides when idle in "While typing" and wants the key presses of this keyboard.
+    private var ghostWantsPresses = false
 
     var history = TrainerHistory.shared
 
@@ -111,6 +114,7 @@ final class LiveKeyboard: ObservableObject {
         started = true
         vialGUIRunning = vialGUI.isRunning
         link.transport.onEvent = { [weak self] in self?.received(event: $0) }
+        link.transport.onForeignReport = { [weak self] in self?.foreignReportSeen() }
         link.$isConnected
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
@@ -130,7 +134,7 @@ final class LiveKeyboard: ObservableObject {
             .sink { [weak self] on in
                 guard let self else { return }
                 self.highlightPressed = on
-                if !self.usesMatrix { self.pressed.clear() }
+                self.syncPressed()
             }
             .store(in: &cancellables)
     }
@@ -161,9 +165,25 @@ final class LiveKeyboard: ObservableObject {
         guard visible != ghostVisible else { return }
         ghostVisible = visible
         if visible, connected { pollState() }
-        if !usesMatrix { pressed.clear() }
+        syncPressed()
         updatePush()
         scheduleTimer()
+    }
+
+    /// Called by the ghost: whether its visibility goes by the key presses (`pressed.presses`).
+    func setGhostWantsPresses(_ wanted: Bool) {
+        guard wanted != ghostWantsPresses else { return }
+        ghostWantsPresses = wanted
+        syncPressed()
+    }
+
+    /// The keyboard is telling which keys go down right now, so `pressed.presses` fires for
+    /// every key of this keyboard (and for no other keyboard's).
+    var reportsPresses: Bool { connected && pushActive && tracksMatrix }
+
+    /// After anything `tracksMatrix` / `usesMatrix` depend on changed.
+    private func syncPressed() {
+        if !tracksMatrix { pressed.clear() } else if !usesMatrix { pressed.unlight() }
     }
 
     func toggleMisfires() { showMisfires.toggle() }
@@ -180,6 +200,9 @@ final class LiveKeyboard: ObservableObject {
 
     private func connectionChanged(_ isConnected: Bool) {
         connected = isConnected
+        otherClientTimer?.invalidate()
+        otherClientTimer = nil
+        if otherClientTalking { otherClientTalking = false }
         stateSupported = true
         tapHoldSupported = true
         trainerSupported = true
@@ -261,7 +284,7 @@ final class LiveKeyboard: ObservableObject {
     private func scheduleTimer() {
         // While the keyboard pushes its state the poll is only a safety net (and still how a
         // keyboard that silently dropped the subscription is caught up with).
-        let interval: TimeInterval = !connected || !stateSupported ? 0 : (wantsFastState && !pushActive ? Self.fastInterval : Self.slowInterval)
+        let interval: TimeInterval = !connected || !stateSupported || otherClientTalking ? 0 : (wantsFastState && !pushActive ? Self.fastInterval : Self.slowInterval)
         guard interval != timerInterval else { return }
         timerInterval = interval
         timer?.invalidate()
@@ -325,16 +348,46 @@ final class LiveKeyboard: ObservableObject {
 
     /// Unsolicited reports can be taken for a reply by the Vial GUI, which pairs replies with
     /// requests by order only: no subscription while it runs.
-    private var wantsPush: Bool { connected && pushSupported && wantsFastState && !vialGUIRunning }
+    private var wantsPush: Bool { connected && pushSupported && wantsFastState && !vialGUIRunning && !otherClientTalking }
 
-    /// Matrix events say which keys are down. They are looked at only for the ghost's highlight
-    /// and only while that setting is on; the keyboard sends them to every subscriber regardless.
+    /// How long after the last report of another program's conversation this app stays silent.
+    static var otherClientQuiet: TimeInterval = 120
+    /// Another program is talking to the keyboard over the shared interface (seen by the replies
+    /// to requests that are not ours). vial.rocks takes whatever report comes next for the reply
+    /// to its request, so neither events nor the replies to this app's polls may reach it: no
+    /// subscription and no polling until it has been quiet for `otherClientQuiet`. The state
+    /// shown meanwhile is the last one known.
+    @Published private(set) var otherClientTalking = false
+    private var otherClientTimer: Timer?
+
+    private func foreignReportSeen() {
+        guard connected else { return }
+        otherClientTimer?.invalidate()
+        let t = Timer(timeInterval: Self.otherClientQuiet, repeats: false) { [weak self] _ in self?.setOtherClientTalking(false) }
+        RunLoop.main.add(t, forMode: .common)
+        otherClientTimer = t
+        setOtherClientTalking(true)
+    }
+
+    private func setOtherClientTalking(_ talking: Bool) {
+        if !talking { otherClientTimer?.invalidate(); otherClientTimer = nil }
+        guard talking != otherClientTalking else { return }
+        otherClientTalking = talking
+        updatePush()
+        scheduleTimer()
+    }
+
+    /// Matrix events say which keys are down. They are looked at only for the ghost: for its
+    /// highlight while that setting is on (`usesMatrix`) and, in "While typing", to notice that a
+    /// key of this keyboard went down. The keyboard sends them to every subscriber regardless.
     var usesMatrix: Bool { matrixOverride ?? (highlightPressed && ghostVisible) }
+    var tracksMatrix: Bool { matrixOverride ?? (ghostVisible && (highlightPressed || ghostWantsPresses)) }
 
     /// One line for `--live-probe`.
     var pushStatus: String {
         if !connected { return "not connected" }
         if !pushSupported { return "not supported by this firmware (0xF7 unhandled), polling" }
+        if otherClientTalking { return "paused, with the polling: another program is talking to the keyboard" }
         if vialGUIRunning { return "off while the Vial GUI is running, polling" }
         if !wantsFastState { return "not needed (nothing on screen)" }
         return pushActive ? "in use (ttl \(pushTTL) s, renewed every \(String(format: "%.1f", TimeInterval(pushTTL) / 3)) s)" : "not established, polling"
@@ -422,9 +475,9 @@ final class LiveKeyboard: ObservableObject {
         guard connected else { return }
         eventCounts[Int(report[1]), default: 0] += 1
         if report[1] == 2 {
-            // Not even parsed unless the highlight wants it.
-            guard pushActive, usesMatrix, case .matrix(let m)? = LiveEvent.parse(report) else { return }
-            pressed.set(m.pressed)
+            // Not even parsed unless the ghost wants it.
+            guard pushActive, tracksMatrix, case .matrix(let m)? = LiveEvent.parse(report) else { return }
+            pressed.set(m.pressed, light: usesMatrix)
         } else if case .state(let s)? = LiveEvent.parse(report) {
             apply(state: s)
         }
@@ -479,6 +532,7 @@ final class LiveKeyboard: ObservableObject {
 
 /// The keys shown as pressed. `lit` is what is drawn: the keys that are down, each for at
 /// least `minLit` so that the shortest tap still gets a frame (the view fades it out after).
+/// With `light: false` only `down` and `presses` are kept up (nothing is drawn).
 final class PressedKeys: ObservableObject {
     static let minLit: TimeInterval = 0.08
 
@@ -489,11 +543,16 @@ final class PressedKeys: ObservableObject {
     let presses = PassthroughSubject<Void, Never>()
     private var pressedAt: [Int: Date] = [:]
 
-    func set(_ keys: Set<Int>) {
+    func set(_ keys: Set<Int>, light: Bool = true) {
         guard keys != down else { return }
         let now = Date()
         let pressed = keys.subtracting(down), released = down.subtracting(keys)
         down = keys
+        guard light else {
+            unlight()
+            if !pressed.isEmpty { presses.send() }
+            return
+        }
         var next = lit
         for k in pressed {
             pressedAt[k] = now
@@ -514,6 +573,11 @@ final class PressedKeys: ObservableObject {
 
     func clear() {
         down = []
+        unlight()
+    }
+
+    /// Nothing drawn any more; what is down stays known.
+    func unlight() {
         pressedAt = [:]
         if !lit.isEmpty { lit = [] }
     }

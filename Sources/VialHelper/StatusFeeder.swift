@@ -70,6 +70,9 @@ final class StatusFeeder {
     }
 
     private func send() {
+        // Its reply would be taken for an answer by the other program (see LiveKeyboard); the
+        // text on the OLED expires by itself and comes back with a later tick.
+        guard !LiveKeyboard.shared.otherClientTalking else { return }
         shown = true
         link.sendStatus(rows: rows, ttl: Self.ttl)
     }

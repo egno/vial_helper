@@ -257,6 +257,10 @@ struct SettingsView: View {
                 }
             }
             Toggle("Show clock and input source on the keyboard OLED", isOn: $settings.oledStatus)
+            if live.otherClientTalking {
+                Text("Paused: another program (Vial, vial.rocks) is talking to the keyboard. Live state comes back about two minutes after it stops.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
         }
         if link.isConnected {
             Section("Supported by this firmware") {

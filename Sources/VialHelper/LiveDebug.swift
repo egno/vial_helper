@@ -168,7 +168,7 @@ enum LiveDebug {
                 .map { String(format: "0x%02X: %d", $0.key, $0.value) }.joined(separator: ", ")
             print("requests in \(seconds) s: \(counts)")
             print("push (0xF7): \(live.pushStatus)")
-            print("events received: state \(live.eventCounts[1] ?? 0), matrix \(live.eventCounts[2] ?? 0) (matrix events are \(live.usesMatrix ? "used" : "ignored"))")
+            print("events received: state \(live.eventCounts[1] ?? 0), matrix \(live.eventCounts[2] ?? 0) (matrix events are \(live.usesMatrix ? "used" : live.tracksMatrix ? "used for key activity only" : "ignored"))")
             print("state: \(live.state.map { "\($0)" } ?? "none")")
             print("tap-hold: \(live.tapHold.map { "\($0)" } ?? "none"), chordalExempt \(model.chordalExempt.sorted())")
             print("misfire keys: \(live.misfires.count), trainer sessions recorded: \(live.history.records.count)")
@@ -612,6 +612,24 @@ enum PushSelfTest {
                     vial.set(false)
                     Poll.until({ live.pushActive && kb.subscribedTTL == 1 }) { ok in
                         check("push: resumes when the Vial GUI quits", ok)
+                        otherProgram()
+                    }
+                }
+            }
+        }
+        /// A reply to a request this app did not send: another program (vial.rocks) is talking.
+        func otherProgram() {
+            let quiet = LiveKeyboard.otherClientQuiet
+            LiveKeyboard.otherClientQuiet = 0.6
+            hid.injectReport([0x08, 0x00, 0x05] + [UInt8](repeating: 0xAB, count: 29))
+            Poll.until({ live.otherClientTalking && kb.subscribedTTL == 0 && !live.pushActive }) { ok in
+                let polls = kb.requests(f4), subscribes = kb.requests(f7)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    check("push: silent while another program talks to the keyboard",
+                          ok && live.otherClientTalking && kb.requests(f4) == polls && kb.requests(f7) == subscribes)
+                    Poll.until({ !live.otherClientTalking && live.pushActive && kb.subscribedTTL == 1 }) { ok in
+                        check("push: resumes after the other program has been quiet", ok)
+                        LiveKeyboard.otherClientQuiet = quiet
                         hidden()
                     }
                 }

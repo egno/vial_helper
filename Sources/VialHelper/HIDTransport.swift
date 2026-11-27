@@ -78,6 +78,10 @@ final class HIDTransport: ObservableObject {
     /// Unsolicited 0xF7 reports (state / matrix events), on the main thread, in the order they
     /// arrived and in order with the request completions. Set before `start`.
     var onEvent: (([UInt8]) -> Void)?
+    /// A report that answers nothing this app asked: another program (the Vial GUI, vial.rocks in
+    /// a browser) is talking to the keyboard, or a reply of ours came after its timeout. On the
+    /// main thread. Set before `start`.
+    var onForeignReport: (() -> Void)?
 
     private struct Request {
         let bytes: [UInt8]
@@ -301,7 +305,7 @@ final class HIDTransport: ObservableObject {
             finish(pending.request, reply)
             pump()
         case .ignore:
-            break
+            DispatchQueue.main.async { [self] in onForeignReport?() }
         }
     }
 

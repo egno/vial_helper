@@ -18,8 +18,10 @@ Menu-bar app for macOS that shows the keymap of your Vial-configured split keybo
   overlay is open. Settings → Ghost mode → Show chooses when it is on screen: always, only on layers above the base
   layer, fading out a few seconds after you return to the base layer (these two need the `0xF4` live state), or
   "While typing": it appears with any key press (also a layer key or a held Shift), stays while a layer or a
-  modifier is held and fades out after "Hide after" seconds without a key. That mode asks the system how long ago
-  the last key went down (no permission needed, the key itself is not seen), so keys of any keyboard count.
+  key is held and fades out after "Hide after" seconds without a key. Only the keys of this keyboard count: the
+  keyboard reports them itself (`0xF7` events, see below), so typing on the laptop's own keyboard leaves the ghost
+  hidden. Without those events (older firmware, or while Vial is talking to the keyboard) only a layer change
+  brings it up.
   "Move Ghost…" (menu or Settings) lets you drag it anywhere: Done, Return or a click elsewhere keeps the place,
   Esc cancels; the place is remembered per screen, and picking a Position (or Reset) goes back to the corners.
   "Hide from screenshots and screen sharing" keeps it out of captures.
@@ -79,12 +81,17 @@ Menu-bar app for macOS that shows the keymap of your Vial-configured split keybo
     - Privacy: a subscriber is also sent the positions of the keys that are physically down, and every program
       that has the raw HID interface open can read those reports (with the keymap that is what is being typed,
       without any input-monitoring permission). The app looks at them only for the ghost's "Highlight pressed
-      keys" (off by default) and ignores them otherwise; the firmware sends them to any subscriber regardless.
+      keys" (off by default) and, in "While typing", to notice that a key went down (which key is not kept or
+      shown); it ignores them otherwise. The firmware sends them to any subscriber regardless.
     - Vial GUI: Vial pairs replies with its requests by order only, so a report the keyboard sends unasked can
       corrupt what Vial reads. While the Vial app is running (bundle id `today.vial`, or any app whose name or
       bundle id has a word starting with "vial") the app holds no subscription and polls instead; it
-      subscribes again when Vial quits. Vial run from source or in a browser is not noticed: turn the ghost and
-      the overlay off while using those.
+      subscribes again when Vial quits.
+    - Any other program on the raw HID interface (Vial run from source, vial.rocks in a browser): noticed by
+      the replies to requests this app did not send. The app then drops the subscription and stops polling and
+      feeding the OLED, so nothing of its own reaches that program, and starts again two minutes after the last
+      such reply; the ghost shows the last known state meanwhile. A report or two can still get through before
+      the other program sends its first request (vial.rocks logs `g_read_timeout is not defined` for those).
   - Chordal Hold exemptions (`0xF6`) fill the `✱` markers, and the tap-hold line shows Chordal Hold and
     the Flow Tap term as the keyboard applies them now.
   - Trainer results (`0xF5`): every finished trainer session is appended to
